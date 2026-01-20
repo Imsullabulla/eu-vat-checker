@@ -6,6 +6,7 @@ import re
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+from thefuzz import fuzz
 
 # --- SETUP ---
 st.set_page_config(page_title="EU VAT Checker", layout="wide")
@@ -83,6 +84,43 @@ def validate_vat_format(country_code, vat_number):
     if re.match(pattern, vat_number):
         return True, ""
     return False, EU_VAT_FORMATS[country_code]["description"]
+
+# --- FRAUD DETECTION FUNCTIONS ---
+
+def calculate_name_similarity(name1, name2):
+    """
+    Calculate similarity score between two company names using fuzzy matching.
+    Returns a score from 0-100.
+    """
+    if not name1 or not name2:
+        return 0
+
+    # Clean and normalize names
+    name1_clean = str(name1).upper().strip()
+    name2_clean = str(name2).upper().strip()
+
+    if name1_clean == "---" or name2_clean == "---":
+        return 0
+
+    # Use multiple fuzzy matching methods and take the best score
+    ratio = fuzz.ratio(name1_clean, name2_clean)
+    partial_ratio = fuzz.partial_ratio(name1_clean, name2_clean)
+    token_sort_ratio = fuzz.token_sort_ratio(name1_clean, name2_clean)
+    token_set_ratio = fuzz.token_set_ratio(name1_clean, name2_clean)
+
+    # Return the maximum score from all methods
+    return max(ratio, partial_ratio, token_sort_ratio, token_set_ratio)
+
+def get_identity_risk(score):
+    """
+    Determine identity risk level based on similarity score.
+    """
+    if score > 80:
+        return "Verified"
+    elif score >= 50:
+        return "Check Manually"
+    else:
+        return "POTENTIAL FRAUD"
 
 # --- FUNCTIONS ---
 
@@ -342,9 +380,16 @@ def format_time_remaining(seconds):
         return f"{hours}h"
 
 
-def process_single_vat(index, raw_vat):
+def process_single_vat(index, raw_vat, customer_name=None):
     """Process a single VAT number and return result with index for ordering"""
     country, number = clean_vat_number(raw_vat)
+
+    # Base result structure for fraud detection columns
+    fraud_columns = {
+        "Customer Name (Input)": str(customer_name) if customer_name else "---",
+        "Name Match Score": "---",
+        "Identity Risk": "---"
+    }
 
     # Case 1: Could not extract country code at all
     if not country or not number:
@@ -360,7 +405,8 @@ def process_single_vat(index, raw_vat):
                 "Validation Result": "Unknown",
                 "Validation Date & Time": datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
                 "Correct Format": "Must start with 2-letter country code (e.g., DK, DE, FR)",
-                "Error Details": "Missing or invalid country code"
+                "Error Details": "Missing or invalid country code",
+                **fraud_columns
             }
         }
 
@@ -378,7 +424,8 @@ def process_single_vat(index, raw_vat):
                 "Validation Result": "Unknown",
                 "Validation Date & Time": datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
                 "Correct Format": f"'{country}' is not a valid EU country code",
-                "Error Details": "Unknown country code - not an EU member state"
+                "Error Details": "Unknown country code - not an EU member state",
+                **fraud_columns
             }
         }
 
@@ -399,7 +446,8 @@ def process_single_vat(index, raw_vat):
                 "Validation Result": "Unknown",
                 "Validation Date & Time": datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
                 "Correct Format": f"{correct_format} ({format_desc})",
-                "Error Details": f"Format should be: {format_description}"
+                "Error Details": f"Format should be: {format_description}",
+                **fraud_columns
             }
         }
 
@@ -410,6 +458,17 @@ def process_single_vat(index, raw_vat):
     if response["error_type"] == "none" and response["valid"] is True:
         status = "Valid"
         result = "Valid"
+
+        # Fraud detection: Calculate name similarity for valid VAT numbers
+        if customer_name and customer_name != "---" and response["name"] != "---":
+            similarity_score = calculate_name_similarity(customer_name, response["name"])
+            identity_risk = get_identity_risk(similarity_score)
+            fraud_columns = {
+                "Customer Name (Input)": str(customer_name),
+                "Name Match Score": similarity_score,
+                "Identity Risk": identity_risk
+            }
+
     elif response["error_type"] == "invalid" and response["valid"] is False:
         status = "Invalid"
         result = "Invalid"
@@ -432,7 +491,8 @@ def process_single_vat(index, raw_vat):
             "Validation Result": result,
             "Validation Date & Time": format_datetime(response["request_date"]),
             "Correct Format": "---",
-            "Error Details": response["error_detail"] if response["error_detail"] else "---"
+            "Error Details": response["error_detail"] if response["error_detail"] else "---",
+            **fraud_columns
         }
     }
 
@@ -441,6 +501,18 @@ def process_single_vat(index, raw_vat):
 
 st.title("EU VAT Bulk Checker")
 st.markdown("Upload an Excel file with VAT numbers (include country code, e.g. DK12345678).")
+
+# Sidebar for fraud detection settings
+with st.sidebar:
+    st.header("Fraud Detection")
+    st.markdown("Compare customer names from your file with official VIES records.")
+    enable_fraud_detection = st.checkbox("Enable Name Verification", value=False)
+
+    st.markdown("---")
+    st.markdown("**Risk Levels:**")
+    st.markdown("- **Verified**: Score > 80%")
+    st.markdown("- **Check Manually**: Score 50-80%")
+    st.markdown("- **POTENTIAL FRAUD**: Score < 50%")
 
 uploaded_file = st.file_uploader("Choose your Excel file", type=["xlsx", "xls"])
 
@@ -460,7 +532,25 @@ if uploaded_file:
     if vat_column is None:
         vat_column = df.columns[0]
 
-    st.info(f"Using column: **{vat_column}**")
+    st.info(f"Using VAT column: **{vat_column}**")
+
+    # Column selector for customer name (for fraud detection)
+    name_column = None
+    if enable_fraud_detection:
+        st.markdown("### Fraud Detection Setup")
+        name_keywords = ["name", "company", "firma", "kunde", "customer", "navn"]
+        default_name_col = None
+        for col in df.columns:
+            if any(keyword in str(col).lower() for keyword in name_keywords):
+                default_name_col = col
+                break
+
+        name_column = st.selectbox(
+            "Select column with Customer/Company Names:",
+            options=df.columns.tolist(),
+            index=df.columns.tolist().index(default_name_col) if default_name_col else 0
+        )
+        st.success(f"Will compare names from **{name_column}** with VIES records.")
 
     if st.button("Start Validation"):
 
@@ -472,9 +562,17 @@ if uploaded_file:
         progress_bar = progress_bar_placeholder.progress(0)
         status_text = st.empty()
 
-        # Remove duplicate VAT numbers
+        # Remove duplicate VAT numbers (keep first occurrence with its name)
         original_count = len(df)
-        unique_vat_numbers = df[vat_column].drop_duplicates().tolist()
+        if enable_fraud_detection and name_column:
+            # Keep VAT and Name columns for deduplication
+            df_unique = df.drop_duplicates(subset=[vat_column], keep='first')
+            unique_vat_numbers = df_unique[vat_column].tolist()
+            customer_names = df_unique[name_column].tolist()
+        else:
+            unique_vat_numbers = df[vat_column].drop_duplicates().tolist()
+            customer_names = [None] * len(unique_vat_numbers)
+
         unique_count = len(unique_vat_numbers)
         duplicates_removed = original_count - unique_count
 
@@ -484,8 +582,8 @@ if uploaded_file:
         total = unique_count
         completed_count = 0
 
-        # Prepare list of tasks with unique VAT numbers: (index, vat_number)
-        tasks = [(i, vat) for i, vat in enumerate(unique_vat_numbers)]
+        # Prepare list of tasks with unique VAT numbers and customer names: (index, vat_number, customer_name)
+        tasks = [(i, vat, name) for i, (vat, name) in enumerate(zip(unique_vat_numbers, customer_names))]
 
         # Results dictionary to maintain order
         results_dict = {}
@@ -496,8 +594,8 @@ if uploaded_file:
         # Process with ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             future_to_index = {
-                executor.submit(process_single_vat, idx, vat): idx
-                for idx, vat in tasks
+                executor.submit(process_single_vat, idx, vat, name): idx
+                for idx, vat, name in tasks
             }
 
             for future in as_completed(future_to_index):
@@ -540,7 +638,10 @@ if uploaded_file:
                             "Validation Result": "Unknown",
                             "Validation Date & Time": datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
                             "Correct Format": "---",
-                            "Error Details": str(e)[:100]
+                            "Error Details": str(e)[:100],
+                            "Customer Name (Input)": "---",
+                            "Name Match Score": "---",
+                            "Identity Risk": "---"
                         }
                         completed_count += 1
                     progress_bar.progress(completed_count / total)
@@ -573,9 +674,27 @@ if uploaded_file:
         col4.metric("Service Unavailable", service_error_count, delta=None)
         col5.metric("Other Errors", other_error_count, delta=None)
 
+        # Fraud detection summary (if enabled)
+        if enable_fraud_detection:
+            st.markdown("### Fraud Detection Summary")
+            fraud_results = [r for r in results if r["Identity Risk"] != "---"]
+            if fraud_results:
+                verified_count = sum(1 for r in fraud_results if r["Identity Risk"] == "Verified")
+                check_count = sum(1 for r in fraud_results if r["Identity Risk"] == "Check Manually")
+                fraud_count = sum(1 for r in fraud_results if r["Identity Risk"] == "POTENTIAL FRAUD")
+
+                fcol1, fcol2, fcol3 = st.columns(3)
+                fcol1.metric("Verified", verified_count)
+                fcol2.metric("Check Manually", check_count)
+                fcol3.metric("POTENTIAL FRAUD", fraud_count)
+
         result_df = pd.DataFrame(results)
 
-        # Style the validation status column
+        # Remove fraud detection columns if not enabled
+        if not enable_fraud_detection:
+            result_df = result_df.drop(columns=["Customer Name (Input)", "Name Match Score", "Identity Risk"], errors='ignore')
+
+        # Style the validation status and identity risk columns
         def highlight_status(val):
             if val == "Valid":
                 return "color: green; font-weight: bold"
@@ -589,7 +708,21 @@ if uploaded_file:
                 return "color: gray; font-weight: bold"
             return ""
 
-        styled_df = result_df.style.applymap(highlight_status, subset=["VIES Validation Status"])
+        def highlight_risk(val):
+            if val == "Verified":
+                return "color: green; font-weight: bold"
+            elif val == "Check Manually":
+                return "color: orange; font-weight: bold"
+            elif val == "POTENTIAL FRAUD":
+                return "color: red; font-weight: bold; background-color: #ffcccc"
+            return ""
+
+        style_columns = ["VIES Validation Status"]
+        if enable_fraud_detection and "Identity Risk" in result_df.columns:
+            styled_df = result_df.style.applymap(highlight_status, subset=["VIES Validation Status"]).applymap(highlight_risk, subset=["Identity Risk"])
+        else:
+            styled_df = result_df.style.applymap(highlight_status, subset=["VIES Validation Status"])
+
         st.dataframe(styled_df, use_container_width=True)
 
         # Download buttons
