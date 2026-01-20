@@ -91,6 +91,10 @@ def calculate_name_similarity(name1, name2):
     """
     Calculate similarity score between two company names using fuzzy matching.
     Returns a score from 0-100.
+
+    Uses token_set_ratio as primary (handles extra words like A/S, GmbH, Ltd)
+    and partial_ratio as secondary (handles substring matches like LEGO in LEGO System A/S).
+    Takes the HIGHEST score to reduce false positives.
     """
     if not name1 or not name2:
         return 0
@@ -102,22 +106,34 @@ def calculate_name_similarity(name1, name2):
     if name1_clean == "---" or name2_clean == "---":
         return 0
 
-    # Use multiple fuzzy matching methods and take the best score
-    ratio = fuzz.ratio(name1_clean, name2_clean)
-    partial_ratio = fuzz.partial_ratio(name1_clean, name2_clean)
-    token_sort_ratio = fuzz.token_sort_ratio(name1_clean, name2_clean)
-    token_set_ratio = fuzz.token_set_ratio(name1_clean, name2_clean)
+    # Primary: token_set_ratio - best for company names with extra words
+    # Example: "LEGO" vs "LEGO System A/S" = high score
+    # Example: "Google" vs "Google Ireland Ltd" = high score
+    token_set_score = fuzz.token_set_ratio(name1_clean, name2_clean)
 
-    # Return the maximum score from all methods
-    return max(ratio, partial_ratio, token_sort_ratio, token_set_ratio)
+    # Secondary: partial_ratio - good for substring matches
+    # Example: "LEGO" contained in "LEGO System A/S" = high score
+    partial_score = fuzz.partial_ratio(name1_clean, name2_clean)
+
+    # Additional: token_sort_ratio - handles word order differences
+    # Example: "Company ABC" vs "ABC Company" = high score
+    token_sort_score = fuzz.token_sort_ratio(name1_clean, name2_clean)
+
+    # Return the HIGHEST score to reduce false positives
+    return max(token_set_score, partial_score, token_sort_score)
 
 def get_identity_risk(score):
     """
     Determine identity risk level based on similarity score.
+
+    Thresholds:
+    - > 85: High confidence match (Verified)
+    - 60-85: Partial match, needs manual review (Check Manually)
+    - < 60: Little to no resemblance (POTENTIAL FRAUD)
     """
-    if score > 80:
+    if score > 85:
         return "Verified"
-    elif score >= 50:
+    elif score >= 60:
         return "Check Manually"
     else:
         return "POTENTIAL FRAUD"
@@ -510,9 +526,9 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("**Risk Levels:**")
-    st.markdown("- **Verified**: Score > 80%")
-    st.markdown("- **Check Manually**: Score 50-80%")
-    st.markdown("- **POTENTIAL FRAUD**: Score < 50%")
+    st.markdown("- **Verified**: Score > 85%")
+    st.markdown("- **Check Manually**: Score 60-85%")
+    st.markdown("- **POTENTIAL FRAUD**: Score < 60%")
 
 uploaded_file = st.file_uploader("Choose your Excel file", type=["xlsx", "xls"])
 
