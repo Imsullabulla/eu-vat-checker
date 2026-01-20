@@ -377,11 +377,21 @@ if uploaded_file:
         progress_bar_placeholder = st.empty()
         progress_bar = progress_bar_placeholder.progress(0)
         status_text = st.empty()
-        total = len(df)
+
+        # Remove duplicate VAT numbers
+        original_count = len(df)
+        unique_vat_numbers = df[vat_column].drop_duplicates().tolist()
+        unique_count = len(unique_vat_numbers)
+        duplicates_removed = original_count - unique_count
+
+        if duplicates_removed > 0:
+            st.warning(f"Removed {duplicates_removed} duplicate VAT numbers. Processing {unique_count} unique numbers.")
+
+        total = unique_count
         completed_count = 0
 
-        # Prepare list of tasks: (index, vat_number)
-        tasks = [(i, row[vat_column]) for i, row in df.iterrows()]
+        # Prepare list of tasks with unique VAT numbers: (index, vat_number)
+        tasks = [(i, vat) for i, vat in enumerate(unique_vat_numbers)]
 
         # Results dictionary to maintain order
         results_dict = {}
