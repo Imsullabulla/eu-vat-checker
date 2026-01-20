@@ -431,7 +431,7 @@ def process_single_vat(index, raw_vat):
             "VIES Validation Status": status,
             "Validation Result": result,
             "Validation Date & Time": format_datetime(response["request_date"]),
-            "Correct Format": f"{correct_format}" if status != "Valid" else "---",
+            "Correct Format": "---",
             "Error Details": response["error_detail"] if response["error_detail"] else "---"
         }
     }
