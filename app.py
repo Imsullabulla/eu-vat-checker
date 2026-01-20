@@ -33,6 +33,57 @@ SERVICE_UNAVAILABLE_ERRORS = {
 # HTTP status codes that indicate service issues (should retry)
 RETRY_HTTP_CODES = {500, 502, 503, 504, 429}
 
+# --- EU VAT NUMBER FORMATS ---
+# Format patterns and examples for each EU member state
+EU_VAT_FORMATS = {
+    "AT": {"pattern": r"^U\d{8}$", "format": "ATU12345678", "description": "U + 8 digits"},
+    "BE": {"pattern": r"^[01]\d{9}$", "format": "BE0123456789", "description": "0 or 1 + 9 digits"},
+    "BG": {"pattern": r"^\d{9,10}$", "format": "BG123456789", "description": "9 or 10 digits"},
+    "CY": {"pattern": r"^\d{8}[A-Z]$", "format": "CY12345678X", "description": "8 digits + 1 letter"},
+    "CZ": {"pattern": r"^\d{8,10}$", "format": "CZ12345678", "description": "8, 9 or 10 digits"},
+    "DE": {"pattern": r"^\d{9}$", "format": "DE123456789", "description": "9 digits"},
+    "DK": {"pattern": r"^\d{8}$", "format": "DK12345678", "description": "8 digits"},
+    "EE": {"pattern": r"^\d{9}$", "format": "EE123456789", "description": "9 digits"},
+    "EL": {"pattern": r"^\d{9}$", "format": "EL123456789", "description": "9 digits (Greece)"},
+    "ES": {"pattern": r"^[A-Z0-9]\d{7}[A-Z0-9]$", "format": "ESX1234567X", "description": "Letter/digit + 7 digits + letter/digit"},
+    "FI": {"pattern": r"^\d{8}$", "format": "FI12345678", "description": "8 digits"},
+    "FR": {"pattern": r"^[A-Z0-9]{2}\d{9}$", "format": "FRXX123456789", "description": "2 characters + 9 digits"},
+    "HR": {"pattern": r"^\d{11}$", "format": "HR12345678901", "description": "11 digits"},
+    "HU": {"pattern": r"^\d{8}$", "format": "HU12345678", "description": "8 digits"},
+    "IE": {"pattern": r"^\d{7}[A-Z]{1,2}$|^\d[A-Z+*]\d{5}[A-Z]$", "format": "IE1234567X or IE1X12345X", "description": "7 digits + 1-2 letters, or special format"},
+    "IT": {"pattern": r"^\d{11}$", "format": "IT12345678901", "description": "11 digits"},
+    "LT": {"pattern": r"^\d{9}$|^\d{12}$", "format": "LT123456789", "description": "9 or 12 digits"},
+    "LU": {"pattern": r"^\d{8}$", "format": "LU12345678", "description": "8 digits"},
+    "LV": {"pattern": r"^\d{11}$", "format": "LV12345678901", "description": "11 digits"},
+    "MT": {"pattern": r"^\d{8}$", "format": "MT12345678", "description": "8 digits"},
+    "NL": {"pattern": r"^\d{9}B\d{2}$", "format": "NL123456789B01", "description": "9 digits + B + 2 digits"},
+    "PL": {"pattern": r"^\d{10}$", "format": "PL1234567890", "description": "10 digits"},
+    "PT": {"pattern": r"^\d{9}$", "format": "PT123456789", "description": "9 digits"},
+    "RO": {"pattern": r"^\d{2,10}$", "format": "RO1234567890", "description": "2 to 10 digits"},
+    "SE": {"pattern": r"^\d{12}$", "format": "SE123456789012", "description": "12 digits"},
+    "SI": {"pattern": r"^\d{8}$", "format": "SI12345678", "description": "8 digits"},
+    "SK": {"pattern": r"^\d{10}$", "format": "SK1234567890", "description": "10 digits"},
+    # Non-EU but sometimes used
+    "XI": {"pattern": r"^\d{9}$|^\d{12}$|^GD\d{3}$|^HA\d{3}$", "format": "XI123456789", "description": "Northern Ireland: 9 or 12 digits"},
+}
+
+def get_vat_format_info(country_code):
+    """Returns format information for a given country code"""
+    if country_code in EU_VAT_FORMATS:
+        info = EU_VAT_FORMATS[country_code]
+        return info["format"], info["description"]
+    return "Unknown", "Country code not recognized"
+
+def validate_vat_format(country_code, vat_number):
+    """Validates if the VAT number matches the expected format for the country"""
+    if country_code not in EU_VAT_FORMATS:
+        return False, "Unknown country code"
+
+    pattern = EU_VAT_FORMATS[country_code]["pattern"]
+    if re.match(pattern, vat_number):
+        return True, ""
+    return False, EU_VAT_FORMATS[country_code]["description"]
+
 # --- FUNCTIONS ---
 
 def clean_vat_number(text):
@@ -295,6 +346,7 @@ def process_single_vat(index, raw_vat):
     """Process a single VAT number and return result with index for ordering"""
     country, number = clean_vat_number(raw_vat)
 
+    # Case 1: Could not extract country code at all
     if not country or not number:
         return {
             "index": index,
@@ -304,13 +356,54 @@ def process_single_vat(index, raw_vat):
                 "Address from Output (VIES)": "---",
                 "Country": "---",
                 "VAT Registration No.": str(raw_vat),
-                "VIES Validation Status": "Format Error",
+                "VIES Validation Status": "Invalid Format",
                 "Validation Result": "Unknown",
                 "Validation Date & Time": datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
+                "Correct Format": "Must start with 2-letter country code (e.g., DK, DE, FR)",
                 "Error Details": "Missing or invalid country code"
             }
         }
 
+    # Case 2: Country code not recognized as EU member state
+    if country not in EU_VAT_FORMATS:
+        return {
+            "index": index,
+            "result": {
+                "No.": index + 1,
+                "Name from Output (VIES)": "---",
+                "Address from Output (VIES)": "---",
+                "Country": country,
+                "VAT Registration No.": number,
+                "VIES Validation Status": "Invalid Format",
+                "Validation Result": "Unknown",
+                "Validation Date & Time": datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
+                "Correct Format": f"'{country}' is not a valid EU country code",
+                "Error Details": "Unknown country code - not an EU member state"
+            }
+        }
+
+    # Case 3: Check if VAT number matches expected format for the country
+    format_valid, format_description = validate_vat_format(country, number)
+    correct_format, format_desc = get_vat_format_info(country)
+
+    if not format_valid:
+        return {
+            "index": index,
+            "result": {
+                "No.": index + 1,
+                "Name from Output (VIES)": "---",
+                "Address from Output (VIES)": "---",
+                "Country": country,
+                "VAT Registration No.": number,
+                "VIES Validation Status": "Invalid Format",
+                "Validation Result": "Unknown",
+                "Validation Date & Time": datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
+                "Correct Format": f"{correct_format} ({format_desc})",
+                "Error Details": f"Format should be: {format_description}"
+            }
+        }
+
+    # Case 4: Format is valid, check with VIES API
     response = check_vat(country, number)
 
     # Determine display status based on error_type and valid flag
@@ -338,6 +431,7 @@ def process_single_vat(index, raw_vat):
             "VIES Validation Status": status,
             "Validation Result": result,
             "Validation Date & Time": format_datetime(response["request_date"]),
+            "Correct Format": f"{correct_format}" if status != "Valid" else "---",
             "Error Details": response["error_detail"] if response["error_detail"] else "---"
         }
     }
@@ -445,6 +539,7 @@ if uploaded_file:
                             "VIES Validation Status": "Error",
                             "Validation Result": "Unknown",
                             "Validation Date & Time": datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
+                            "Correct Format": "---",
                             "Error Details": str(e)[:100]
                         }
                         completed_count += 1
@@ -464,17 +559,19 @@ if uploaded_file:
         # Calculate summary statistics
         valid_count = sum(1 for r in results if r["VIES Validation Status"] == "Valid")
         invalid_count = sum(1 for r in results if r["VIES Validation Status"] == "Invalid")
+        invalid_format_count = sum(1 for r in results if r["VIES Validation Status"] == "Invalid Format")
         service_error_count = sum(1 for r in results if r["VIES Validation Status"] == "Service Unavailable")
-        other_error_count = total - valid_count - invalid_count - service_error_count
+        other_error_count = total - valid_count - invalid_count - invalid_format_count - service_error_count
 
         status_text.success(f"Complete! Processed {total} VAT numbers in {total_time_str}.")
 
         # Summary metrics
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("Valid", valid_count, delta=None)
         col2.metric("Invalid", invalid_count, delta=None)
-        col3.metric("Service Unavailable", service_error_count, delta=None)
-        col4.metric("Other Errors", other_error_count, delta=None)
+        col3.metric("Invalid Format", invalid_format_count, delta=None)
+        col4.metric("Service Unavailable", service_error_count, delta=None)
+        col5.metric("Other Errors", other_error_count, delta=None)
 
         result_df = pd.DataFrame(results)
 
@@ -484,9 +581,11 @@ if uploaded_file:
                 return "color: green; font-weight: bold"
             elif val == "Invalid":
                 return "color: red; font-weight: bold"
+            elif val == "Invalid Format":
+                return "color: purple; font-weight: bold"
             elif val == "Service Unavailable":
                 return "color: orange; font-weight: bold"
-            elif val in ["Format Error", "Unknown", "Error"]:
+            elif val in ["Unknown", "Error"]:
                 return "color: gray; font-weight: bold"
             return ""
 
