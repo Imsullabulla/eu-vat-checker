@@ -127,13 +127,13 @@ def get_identity_risk(score):
     Determine identity risk level based on similarity score.
 
     Thresholds:
-    - > 85: High confidence match (Verified)
-    - 60-85: Partial match, needs manual review (Check Manually)
-    - < 60: Little to no resemblance (POTENTIAL FRAUD)
+    - > 70: High confidence match (Verified)
+    - 40-70: Partial match, needs manual review (Check Manually)
+    - < 40: Little to no resemblance (POTENTIAL FRAUD)
     """
-    if score > 85:
+    if score > 70:
         return "Verified"
-    elif score >= 60:
+    elif score >= 40:
         return "Check Manually"
     else:
         return "POTENTIAL FRAUD"
@@ -526,9 +526,9 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("**Risk Levels:**")
-    st.markdown("- **Verified**: Score > 85%")
-    st.markdown("- **Check Manually**: Score 60-85%")
-    st.markdown("- **POTENTIAL FRAUD**: Score < 60%")
+    st.markdown("- **Verified**: Score > 70%")
+    st.markdown("- **Check Manually**: Score 40-70%")
+    st.markdown("- **POTENTIAL FRAUD**: Score < 40%")
 
 uploaded_file = st.file_uploader("Choose your Excel file", type=["xlsx", "xls"])
 
