@@ -599,10 +599,37 @@ with st.sidebar:
     st.markdown("- **Check Manually**: Score 40-70%")
     st.markdown("- **POTENTIAL FRAUD**: Score < 40%")
 
-uploaded_file = st.file_uploader("Choose your Excel file", type=["xlsx", "xls", "xlsm"])
+uploaded_file = st.file_uploader(
+    "Choose your file",
+    type=["xlsx", "xls", "xlsm", "xlsb", "ods", "csv"]
+)
 
 if uploaded_file:
-    df = pd.read_excel(uploaded_file)
+    # Determine file type and read accordingly
+    file_name = uploaded_file.name.lower()
+
+    try:
+        if file_name.endswith('.csv'):
+            # CSV files
+            df = pd.read_csv(uploaded_file)
+        elif file_name.endswith('.xlsb'):
+            # Excel Binary Workbook (requires pyxlsb)
+            df = pd.read_excel(uploaded_file, engine='pyxlsb')
+        elif file_name.endswith('.ods'):
+            # OpenDocument Spreadsheet (requires odfpy)
+            df = pd.read_excel(uploaded_file, engine='odf')
+        else:
+            # Standard Excel formats (xlsx, xls, xlsm)
+            df = pd.read_excel(uploaded_file)
+    except ImportError as e:
+        if 'pyxlsb' in str(e):
+            st.error("To read .xlsb files, please install pyxlsb: `pip install pyxlsb`")
+            st.stop()
+        elif 'odfpy' in str(e):
+            st.error("To read .ods files, please install odfpy: `pip install odfpy`")
+            st.stop()
+        else:
+            raise e
 
     st.write("Preview:")
     st.dataframe(df.head())
