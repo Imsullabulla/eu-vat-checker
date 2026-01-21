@@ -635,20 +635,18 @@ if uploaded_file:
     st.dataframe(df.head())
 
     # --- COLUMN FORMAT SELECTION ---
-    st.markdown("### Input Configurator")
+    st.markdown("### Data Format Configuration")
 
     data_format = st.radio(
-        "Hvordan er dine data opstillet?",
-        options=[
-            "Samlet i én kolonne (f.eks. DK12345678)",
-            "Opdelt i to kolonner (Landekode + Momsnummer)"
-        ],
-        index=0
+        "How is the VAT data formatted?",
+        options=["Combined (e.g., DK12345678)", "Separate Columns (Country + Number)"],
+        index=0,
+        horizontal=True
     )
 
     # Auto-detect columns based on keywords
     vat_keywords = ["vat", "moms", "cvr", "tax", "number", "nummer", "no"]
-    country_keywords = ["country", "land", "code", "iso", "cc", "landekode"]
+    country_keywords = ["country", "land", "code", "iso", "cc"]
 
     # Find default VAT column
     default_vat_col = None
@@ -667,29 +665,31 @@ if uploaded_file:
             break
 
     # Conditional column selectors
-    if data_format == "Samlet i én kolonne (f.eks. DK12345678)":
+    if data_format == "Combined (e.g., DK12345678)":
         vat_column = st.selectbox(
-            "Vælg kolonne med fuldt momsnummer:",
+            "Select VAT Column (with country code):",
             options=df.columns.tolist(),
             index=df.columns.tolist().index(default_vat_col) if default_vat_col in df.columns.tolist() else 0
         )
         country_column = None
         number_column = None
+        st.info(f"Using combined VAT column: **{vat_column}**")
     else:
         col1, col2 = st.columns(2)
         with col1:
             country_column = st.selectbox(
-                "Vælg Landekode:",
+                "Select Country Code Column:",
                 options=df.columns.tolist(),
                 index=df.columns.tolist().index(default_country_col) if default_country_col and default_country_col in df.columns.tolist() else 0
             )
         with col2:
             number_column = st.selectbox(
-                "Vælg Momsnummer:",
+                "Select VAT Number Column:",
                 options=df.columns.tolist(),
                 index=df.columns.tolist().index(default_vat_col) if default_vat_col in df.columns.tolist() else 0
             )
         vat_column = None
+        st.info(f"Will combine: **{country_column}** + **{number_column}**")
 
     # Column selector for customer name (for fraud detection)
     name_column = None
@@ -724,7 +724,7 @@ if uploaded_file:
         normalized_data = []  # List of (normalized_vat, debug_info, customer_name)
 
         for idx, row in df.iterrows():
-            if data_format == "Samlet i én kolonne (f.eks. DK12345678)":
+            if data_format == "Combined (e.g., DK12345678)":
                 # Use the selected combined column directly
                 raw_value = row[vat_column]
                 normalized, debug_info = normalize_vat_input(raw_value)
