@@ -140,6 +140,65 @@ def get_identity_risk(score):
 
 # --- FUNCTIONS ---
 
+def normalize_vat_input(value):
+    """
+    Robustly normalize VAT input from Excel to a clean string.
+
+    Handles:
+    - NaN/None: Returns None (skip)
+    - Float (e.g., 12345678.0): Removes .0, returns "12345678"
+    - Integer (e.g., 12345678): Converts to "12345678"
+    - String with .0 (e.g., "12345678.0"): Removes .0
+    - Normal strings: Returns as-is after stripping
+
+    Returns:
+        tuple: (normalized_string, debug_info)
+               debug_info shows what transformation was applied
+    """
+    import math
+
+    # Handle NaN/None
+    if value is None:
+        return None, "NULL"
+
+    if isinstance(value, float):
+        if math.isnan(value):
+            return None, "NaN"
+        # Convert float to int first to remove .0, then to string
+        # This handles 12345678.0 -> 12345678 -> "12345678"
+        try:
+            int_value = int(value)
+            return str(int_value), f"FLOAT:{value}->{int_value}"
+        except (ValueError, OverflowError):
+            return str(value), f"FLOAT_ERR:{value}"
+
+    if isinstance(value, int):
+        return str(value), f"INT:{value}"
+
+    # It's a string - clean it up
+    str_value = str(value).strip()
+
+    # Handle "nan" string (pandas sometimes does this)
+    if str_value.lower() == "nan" or str_value == "":
+        return None, "EMPTY_STR"
+
+    # Handle string with .0 suffix (e.g., "12345678.0")
+    if str_value.endswith(".0"):
+        cleaned = str_value[:-2]
+        return cleaned, f"STR_DOT0:{str_value}->{cleaned}"
+
+    # Handle scientific notation strings (e.g., "1.23456e+10")
+    if "e+" in str_value.lower() or "e-" in str_value.lower():
+        try:
+            float_val = float(str_value)
+            int_val = int(float_val)
+            return str(int_val), f"SCI_NOTATION:{str_value}->{int_val}"
+        except (ValueError, OverflowError):
+            pass
+
+    return str_value, f"STR:{str_value}"
+
+
 def clean_vat_number(text):
     """Removes spaces and extracts country code + number"""
     clean_text = re.sub(r'[^A-Z0-9]', '', str(text).upper())
@@ -396,9 +455,15 @@ def format_time_remaining(seconds):
         return f"{hours}h"
 
 
-def process_single_vat(index, raw_vat, customer_name=None):
+def process_single_vat(index, raw_vat, customer_name=None, debug_info=""):
     """Process a single VAT number and return result with index for ordering"""
     country, number = clean_vat_number(raw_vat)
+
+    # Build the debug string showing what was actually validated
+    if country and number:
+        debug_string = f"{country}{number}"
+    else:
+        debug_string = str(raw_vat) if raw_vat else "EMPTY"
 
     # Base result structure for fraud detection columns
     fraud_columns = {
@@ -416,12 +481,13 @@ def process_single_vat(index, raw_vat, customer_name=None):
                 "Name from Output (VIES)": "---",
                 "Address from Output (VIES)": "---",
                 "Country": "---",
-                "VAT Registration No.": str(raw_vat),
+                "VAT Registration No.": str(raw_vat) if raw_vat else "---",
                 "VIES Validation Status": "Invalid Format",
                 "Validation Result": "Unknown",
                 "Validation Date & Time": datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
                 "Correct Format": "Must start with 2-letter country code (e.g., DK, DE, FR)",
                 "Error Details": "Missing or invalid country code",
+                "Debug Input": f"{debug_string} | {debug_info}",
                 **fraud_columns
             }
         }
@@ -441,6 +507,7 @@ def process_single_vat(index, raw_vat, customer_name=None):
                 "Validation Date & Time": datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
                 "Correct Format": f"'{country}' is not a valid EU country code",
                 "Error Details": "Unknown country code - not an EU member state",
+                "Debug Input": f"{debug_string} | {debug_info}",
                 **fraud_columns
             }
         }
@@ -463,6 +530,7 @@ def process_single_vat(index, raw_vat, customer_name=None):
                 "Validation Date & Time": datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
                 "Correct Format": f"{correct_format} ({format_desc})",
                 "Error Details": f"Format should be: {format_description}",
+                "Debug Input": f"{debug_string} | {debug_info}",
                 **fraud_columns
             }
         }
@@ -508,6 +576,7 @@ def process_single_vat(index, raw_vat, customer_name=None):
             "Validation Date & Time": format_datetime(response["request_date"]),
             "Correct Format": "---",
             "Error Details": response["error_detail"] if response["error_detail"] else "---",
+            "Debug Input": f"{debug_string} | {debug_info}",
             **fraud_columns
         }
     }
@@ -624,27 +693,62 @@ if uploaded_file:
         status_text = st.empty()
 
         # --- CONSTRUCT VAT NUMBERS BASED ON FORMAT ---
-        # Create a combined VAT column for processing
-        if data_format == "Combined (e.g., DK12345678)":
-            # Use the selected combined column directly
-            df['_combined_vat'] = df[vat_column].astype(str)
-        else:
-            # Concatenate country code + VAT number
-            df['_combined_vat'] = df[country_column].astype(str).str.strip() + df[number_column].astype(str).str.strip()
+        # Apply robust normalization to handle Excel data types (floats, integers, NaN)
+        normalized_data = []  # List of (normalized_vat, debug_info, customer_name)
 
-        # Remove duplicate VAT numbers (keep first occurrence with its name)
-        original_count = len(df)
-        if enable_fraud_detection and name_column:
-            # Keep VAT and Name columns for deduplication
-            df_unique = df.drop_duplicates(subset=['_combined_vat'], keep='first')
-            unique_vat_numbers = df_unique['_combined_vat'].tolist()
-            customer_names = df_unique[name_column].tolist()
-        else:
-            unique_vat_numbers = df['_combined_vat'].drop_duplicates().tolist()
-            customer_names = [None] * len(unique_vat_numbers)
+        for idx, row in df.iterrows():
+            if data_format == "Combined (e.g., DK12345678)":
+                # Use the selected combined column directly
+                raw_value = row[vat_column]
+                normalized, debug_info = normalize_vat_input(raw_value)
+            else:
+                # Normalize both country and number columns separately, then combine
+                raw_country = row[country_column]
+                raw_number = row[number_column]
 
-        unique_count = len(unique_vat_numbers)
+                country_normalized, country_debug = normalize_vat_input(raw_country)
+                number_normalized, number_debug = normalize_vat_input(raw_number)
+
+                # Handle cases where either is None
+                if country_normalized is None and number_normalized is None:
+                    normalized = None
+                    debug_info = f"COUNTRY:{country_debug}|NUMBER:{number_debug}"
+                elif country_normalized is None:
+                    normalized = number_normalized
+                    debug_info = f"COUNTRY:MISSING|NUMBER:{number_debug}"
+                elif number_normalized is None:
+                    normalized = country_normalized
+                    debug_info = f"COUNTRY:{country_debug}|NUMBER:MISSING"
+                else:
+                    normalized = country_normalized.strip() + number_normalized.strip()
+                    debug_info = f"COUNTRY:{country_debug}|NUMBER:{number_debug}"
+
+            # Get customer name if fraud detection is enabled
+            customer_name = None
+            if enable_fraud_detection and name_column:
+                raw_name = row[name_column]
+                name_normalized, _ = normalize_vat_input(raw_name)
+                customer_name = name_normalized
+
+            # Skip None values (NaN/empty cells)
+            if normalized is not None:
+                normalized_data.append((normalized, debug_info, customer_name))
+
+        # Remove duplicates while preserving debug info (keep first occurrence)
+        original_count = len(normalized_data)
+        seen_vats = {}
+        unique_data = []
+        for vat, debug, name in normalized_data:
+            if vat not in seen_vats:
+                seen_vats[vat] = True
+                unique_data.append((vat, debug, name))
+
+        unique_count = len(unique_data)
         duplicates_removed = original_count - unique_count
+        skipped_count = len(df) - original_count
+
+        if skipped_count > 0:
+            st.info(f"Skipped {skipped_count} empty/invalid rows.")
 
         if duplicates_removed > 0:
             st.warning(f"Removed {duplicates_removed} duplicate VAT numbers. Processing {unique_count} unique numbers.")
@@ -652,8 +756,8 @@ if uploaded_file:
         total = unique_count
         completed_count = 0
 
-        # Prepare list of tasks with unique VAT numbers and customer names: (index, vat_number, customer_name)
-        tasks = [(i, vat, name) for i, (vat, name) in enumerate(zip(unique_vat_numbers, customer_names))]
+        # Prepare list of tasks: (index, vat_number, customer_name, debug_info)
+        tasks = [(i, vat, name, debug) for i, (vat, debug, name) in enumerate(unique_data)]
 
         # Results dictionary to maintain order
         results_dict = {}
@@ -664,8 +768,8 @@ if uploaded_file:
         # Process with ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             future_to_index = {
-                executor.submit(process_single_vat, idx, vat, name): idx
-                for idx, vat, name in tasks
+                executor.submit(process_single_vat, idx, vat, name, debug): idx
+                for idx, vat, name, debug in tasks
             }
 
             for future in as_completed(future_to_index):
@@ -697,6 +801,12 @@ if uploaded_file:
 
                 except Exception as e:
                     idx = future_to_index[future]
+                    # Find the original task data for debug info
+                    task_debug = "ERROR"
+                    for t_idx, t_vat, t_name, t_debug in tasks:
+                        if t_idx == idx:
+                            task_debug = t_debug
+                            break
                     with results_lock:
                         results_dict[idx] = {
                             "No.": idx + 1,
@@ -709,6 +819,7 @@ if uploaded_file:
                             "Validation Date & Time": datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
                             "Correct Format": "---",
                             "Error Details": str(e)[:100],
+                            "Debug Input": f"EXCEPTION | {task_debug}",
                             "Customer Name (Input)": "---",
                             "Name Match Score": "---",
                             "Identity Risk": "---"
