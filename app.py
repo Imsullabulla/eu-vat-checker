@@ -642,6 +642,14 @@ if uploaded_file:
         else:
             raise e
 
+    # Clear previous results when a new file is uploaded
+    if 'current_file' not in st.session_state or st.session_state['current_file'] != file_name:
+        st.session_state['current_file'] = file_name
+        if 'validation_results' in st.session_state:
+            del st.session_state['validation_results']
+        if 'duplicate_data' in st.session_state:
+            del st.session_state['duplicate_data']
+
     st.write("Preview:")
     st.dataframe(df.head())
 
@@ -871,6 +879,21 @@ if uploaded_file:
         turbo_mode_placeholder.empty()
         progress_bar_placeholder.empty()
 
+        # Store results in session state so they persist after download
+        st.session_state['validation_results'] = results
+        st.session_state['duplicate_data'] = duplicate_data
+        st.session_state['total_time_str'] = total_time_str
+        st.session_state['total_count'] = total
+        st.session_state['fraud_detection_enabled'] = enable_fraud_detection
+
+    # Display results from session state (persists after download clicks)
+    if 'validation_results' in st.session_state and st.session_state['validation_results']:
+        results = st.session_state['validation_results']
+        duplicate_data = st.session_state.get('duplicate_data', [])
+        total_time_str = st.session_state.get('total_time_str', '')
+        total = st.session_state.get('total_count', len(results))
+        fraud_detection_enabled = st.session_state.get('fraud_detection_enabled', False)
+
         # Calculate summary statistics
         valid_count = sum(1 for r in results if r["VIES Validation Status"] == "Valid")
         invalid_count = sum(1 for r in results if r["VIES Validation Status"] == "Invalid")
@@ -878,7 +901,7 @@ if uploaded_file:
         service_error_count = sum(1 for r in results if r["VIES Validation Status"] == "Service Unavailable")
         other_error_count = total - valid_count - invalid_count - invalid_format_count - service_error_count
 
-        status_text.success(f"Complete! Processed {total} VAT numbers in {total_time_str}.")
+        st.success(f"Complete! Processed {total} VAT numbers in {total_time_str}.")
 
         # Summary metrics
         col1, col2, col3, col4, col5 = st.columns(5)
@@ -889,7 +912,7 @@ if uploaded_file:
         col5.metric("Other Errors", other_error_count, delta=None)
 
         # Fraud detection summary (if enabled)
-        if enable_fraud_detection:
+        if fraud_detection_enabled:
             st.markdown("### Fraud Detection Summary")
             fraud_results = [r for r in results if r["Identity Risk"] != "---"]
             if fraud_results:
@@ -905,7 +928,7 @@ if uploaded_file:
         result_df = pd.DataFrame(results)
 
         # Remove fraud detection columns if not enabled
-        if not enable_fraud_detection:
+        if not fraud_detection_enabled:
             result_df = result_df.drop(columns=["Customer Name (Input)", "Name Match Score", "Identity Risk"], errors='ignore')
 
         # Style the validation status and identity risk columns
@@ -931,8 +954,7 @@ if uploaded_file:
                 return "color: red; font-weight: bold; background-color: #ffcccc"
             return ""
 
-        style_columns = ["VIES Validation Status"]
-        if enable_fraud_detection and "Identity Risk" in result_df.columns:
+        if fraud_detection_enabled and "Identity Risk" in result_df.columns:
             styled_df = result_df.style.applymap(highlight_status, subset=["VIES Validation Status"]).applymap(highlight_risk, subset=["Identity Risk"])
         else:
             styled_df = result_df.style.applymap(highlight_status, subset=["VIES Validation Status"])
@@ -943,14 +965,14 @@ if uploaded_file:
         col1, col2, col3 = st.columns(3)
         with col1:
             csv = result_df.to_csv(index=False).encode('utf-8')
-            st.download_button("Download CSV", csv, "vat_results.csv", "text/csv")
+            st.download_button("Download CSV", csv, "vat_results.csv", "text/csv", key="download_csv")
         with col2:
             excel_buffer = pd.ExcelWriter("temp.xlsx", engine='openpyxl')
             result_df.to_excel(excel_buffer, index=False)
             excel_buffer.close()
             with open("temp.xlsx", "rb") as f:
                 excel_data = f.read()
-            st.download_button("Download Excel", excel_data, "vat_results.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            st.download_button("Download Excel", excel_data, "vat_results.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_excel")
         with col3:
             if duplicate_data:
                 duplicates_df = pd.DataFrame(duplicate_data)
@@ -959,7 +981,8 @@ if uploaded_file:
                     f"Download Duplicates ({len(duplicate_data)})",
                     duplicates_csv,
                     "vat_duplicates.csv",
-                    "text/csv"
+                    "text/csv",
+                    key="download_duplicates"
                 )
             else:
                 st.info("No duplicates found")
