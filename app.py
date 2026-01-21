@@ -127,13 +127,13 @@ def get_identity_risk(score):
     Determine identity risk level based on similarity score.
 
     Thresholds:
-    - > 70: High confidence match (Verified)
-    - 40-70: Partial match, needs manual review (Check Manually)
-    - < 40: Little to no resemblance (POTENTIAL FRAUD)
+    - > 80: High confidence match (Verified)
+    - 20-80: Partial match, needs manual review (Check Manually)
+    - < 20: Little to no resemblance (POTENTIAL FRAUD)
     """
-    if score > 70:
+    if score > 80:
         return "Verified"
-    elif score >= 40:
+    elif score >= 20:
         return "Check Manually"
     else:
         return "POTENTIAL FRAUD"
@@ -595,9 +595,9 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("**Risk Levels:**")
-    st.markdown("- **Verified**: Score > 70%")
-    st.markdown("- **Check Manually**: Score 40-70%")
-    st.markdown("- **POTENTIAL FRAUD**: Score < 40%")
+    st.markdown("- **Verified**: Score > 80%")
+    st.markdown("- **Check Manually**: Score 20-80%")
+    st.markdown("- **POTENTIAL FRAUD**: Score < 20%")
 
 uploaded_file = st.file_uploader(
     "Choose your file",
