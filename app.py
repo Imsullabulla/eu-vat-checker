@@ -19,6 +19,12 @@ RETRY_DELAY = 2  # Seconds to wait between retries
 # Thread-safe lock for any shared resources
 results_lock = threading.Lock()
 
+# Circuit breaker: Track service unavailable errors per country
+# If a country has 3+ errors, reduce retries to 1 for remaining VATs
+country_error_count = {}
+country_error_lock = threading.Lock()
+CIRCUIT_BREAKER_THRESHOLD = 3  # After 3 failures, reduce retries
+
 # --- ERROR CLASSIFICATION ---
 # These errors indicate the service is temporarily unavailable (NOT invalid VAT)
 SERVICE_UNAVAILABLE_ERRORS = {
@@ -211,9 +217,14 @@ def clean_vat_number(text):
     return country, number
 
 
-def check_vat(country, number):
+def check_vat(country, number, max_retries=None):
     """
     Queries EU VIES API for VAT validation with smart retry logic.
+
+    Args:
+        country: 2-letter country code
+        number: VAT number without country code
+        max_retries: Override default MAX_RETRIES (used by circuit breaker)
 
     Returns:
         dict with keys:
@@ -226,6 +237,9 @@ def check_vat(country, number):
             - error_detail: Specific error message for debugging
             - vat_number: The VAT number checked
     """
+    if max_retries is None:
+        max_retries = MAX_RETRIES
+
     full_url = API_URL.format(country, number)
 
     headers = {
@@ -236,7 +250,7 @@ def check_vat(country, number):
 
     last_error = None
 
-    for attempt in range(MAX_RETRIES):
+    for attempt in range(max_retries):
         try:
             # Rate limiting - polite delay per thread
             time.sleep(0.5)
@@ -246,7 +260,7 @@ def check_vat(country, number):
             # --- Handle HTTP error codes ---
             if response.status_code in RETRY_HTTP_CODES:
                 last_error = f"HTTP_{response.status_code}"
-                if attempt < MAX_RETRIES - 1:
+                if attempt < max_retries - 1:
                     time.sleep(RETRY_DELAY)
                     continue
                 # Max retries exceeded - return as service unavailable
@@ -257,7 +271,7 @@ def check_vat(country, number):
                     "request_date": "",
                     "request_identifier": "",
                     "error_type": "service_unavailable",
-                    "error_detail": f"HTTP {response.status_code} after {MAX_RETRIES} attempts",
+                    "error_detail": f"HTTP {response.status_code} after {max_retries} attempts",
                     "vat_number": number
                 }
 
@@ -295,7 +309,7 @@ def check_vat(country, number):
             # Check if this is a service unavailable error
             if user_error in SERVICE_UNAVAILABLE_ERRORS:
                 last_error = user_error
-                if attempt < MAX_RETRIES - 1:
+                if attempt < max_retries - 1:
                     time.sleep(RETRY_DELAY)
                     continue
                 # Max retries exceeded
@@ -306,7 +320,7 @@ def check_vat(country, number):
                     "request_date": data.get("requestDate", ""),
                     "request_identifier": data.get("requestIdentifier", ""),
                     "error_type": "service_unavailable",
-                    "error_detail": f"{user_error} after {MAX_RETRIES} attempts",
+                    "error_detail": f"{user_error} after {max_retries} attempts",
                     "vat_number": data.get("vatNumber", number)
                 }
 
@@ -314,7 +328,7 @@ def check_vat(country, number):
             if "error" in data:
                 error_msg = data.get("error", "Unknown error")
                 if any(err in str(error_msg).upper() for err in SERVICE_UNAVAILABLE_ERRORS):
-                    if attempt < MAX_RETRIES - 1:
+                    if attempt < max_retries - 1:
                         time.sleep(RETRY_DELAY)
                         continue
                     return {
@@ -358,7 +372,7 @@ def check_vat(country, number):
 
         except requests.exceptions.Timeout:
             last_error = "TIMEOUT"
-            if attempt < MAX_RETRIES - 1:
+            if attempt < max_retries - 1:
                 time.sleep(RETRY_DELAY)
                 continue
             return {
@@ -368,13 +382,13 @@ def check_vat(country, number):
                 "request_date": "",
                 "request_identifier": "",
                 "error_type": "service_unavailable",
-                "error_detail": f"Connection timeout after {MAX_RETRIES} attempts",
+                "error_detail": f"Connection timeout after {max_retries} attempts",
                 "vat_number": number
             }
 
         except requests.exceptions.ConnectionError as e:
             last_error = "CONNECTION_ERROR"
-            if attempt < MAX_RETRIES - 1:
+            if attempt < max_retries - 1:
                 time.sleep(RETRY_DELAY)
                 continue
             return {
@@ -384,13 +398,13 @@ def check_vat(country, number):
                 "request_date": "",
                 "request_identifier": "",
                 "error_type": "service_unavailable",
-                "error_detail": f"Connection error after {MAX_RETRIES} attempts",
+                "error_detail": f"Connection error after {max_retries} attempts",
                 "vat_number": number
             }
 
         except Exception as e:
             last_error = str(e)[:50]
-            if attempt < MAX_RETRIES - 1:
+            if attempt < max_retries - 1:
                 time.sleep(RETRY_DELAY)
                 continue
             return {
@@ -536,7 +550,15 @@ def process_single_vat(index, raw_vat, customer_name=None, debug_info=""):
         }
 
     # Case 4: Format is valid, check with VIES API
-    response = check_vat(country, number)
+    # Circuit breaker: Check if this country has too many service errors
+    with country_error_lock:
+        country_errors = country_error_count.get(country, 0)
+
+    # If country has 3+ errors, reduce retries to 1
+    if country_errors >= CIRCUIT_BREAKER_THRESHOLD:
+        response = check_vat(country, number, max_retries=1)
+    else:
+        response = check_vat(country, number)
 
     # Determine display status based on error_type and valid flag
     if response["error_type"] == "none" and response["valid"] is True:
@@ -559,6 +581,9 @@ def process_single_vat(index, raw_vat, customer_name=None, debug_info=""):
     elif response["error_type"] == "service_unavailable":
         status = "Service Unavailable"
         result = "Unknown"
+        # Circuit breaker: Increment error count for this country
+        with country_error_lock:
+            country_error_count[country] = country_error_count.get(country, 0) + 1
     else:
         status = "Unknown"
         result = "Unknown"
@@ -710,6 +735,9 @@ if uploaded_file:
         st.success(f"Will compare names from **{name_column}** with VIES records.")
 
     if st.button("Start Validation"):
+
+        # Reset circuit breaker counters for new validation run
+        country_error_count.clear()
 
         # Turbo Mode notification (using empty placeholder so it can be cleared)
         turbo_mode_placeholder = st.empty()
