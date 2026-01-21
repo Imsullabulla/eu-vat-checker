@@ -645,8 +645,8 @@ if uploaded_file:
     )
 
     # Auto-detect columns based on keywords
-    vat_keywords = ["vat", "moms", "cvr", "tax", "number", "nummer", "no"]
-    country_keywords = ["country", "land", "code", "iso", "cc"]
+    vat_keywords = ["vat no.", "vat no", "vat", "momsnummer", "moms", "tax code", "taxcode", "cvr", "nummer"]
+    country_keywords = ["country code", "country", "landekode", "land"]
 
     # Find default VAT column
     default_vat_col = None
