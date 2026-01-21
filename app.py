@@ -538,17 +538,62 @@ if uploaded_file:
     st.write("Preview:")
     st.dataframe(df.head())
 
-    # Auto-detect VAT column: look for common names or use first column
-    vat_column = None
+    # --- COLUMN FORMAT SELECTION ---
+    st.markdown("### Data Format Configuration")
+
+    data_format = st.radio(
+        "How is the VAT data formatted?",
+        options=["Combined (e.g., DK12345678)", "Separate Columns (Country + Number)"],
+        index=0,
+        horizontal=True
+    )
+
+    # Auto-detect columns based on keywords
     vat_keywords = ["vat", "moms", "cvr", "tax", "number", "nummer", "no"]
+    country_keywords = ["country", "land", "code", "iso", "cc"]
+
+    # Find default VAT column
+    default_vat_col = None
     for col in df.columns:
         if any(keyword in str(col).lower() for keyword in vat_keywords):
-            vat_column = col
+            default_vat_col = col
             break
-    if vat_column is None:
-        vat_column = df.columns[0]
+    if default_vat_col is None:
+        default_vat_col = df.columns[0]
 
-    st.info(f"Using VAT column: **{vat_column}**")
+    # Find default country column
+    default_country_col = None
+    for col in df.columns:
+        if any(keyword in str(col).lower() for keyword in country_keywords):
+            default_country_col = col
+            break
+
+    # Conditional column selectors
+    if data_format == "Combined (e.g., DK12345678)":
+        vat_column = st.selectbox(
+            "Select VAT Column (with country code):",
+            options=df.columns.tolist(),
+            index=df.columns.tolist().index(default_vat_col) if default_vat_col in df.columns.tolist() else 0
+        )
+        country_column = None
+        number_column = None
+        st.info(f"Using combined VAT column: **{vat_column}**")
+    else:
+        col1, col2 = st.columns(2)
+        with col1:
+            country_column = st.selectbox(
+                "Select Country Code Column:",
+                options=df.columns.tolist(),
+                index=df.columns.tolist().index(default_country_col) if default_country_col and default_country_col in df.columns.tolist() else 0
+            )
+        with col2:
+            number_column = st.selectbox(
+                "Select VAT Number Column:",
+                options=df.columns.tolist(),
+                index=df.columns.tolist().index(default_vat_col) if default_vat_col in df.columns.tolist() else 0
+            )
+        vat_column = None
+        st.info(f"Will combine: **{country_column}** + **{number_column}**")
 
     # Column selector for customer name (for fraud detection)
     name_column = None
@@ -578,15 +623,24 @@ if uploaded_file:
         progress_bar = progress_bar_placeholder.progress(0)
         status_text = st.empty()
 
+        # --- CONSTRUCT VAT NUMBERS BASED ON FORMAT ---
+        # Create a combined VAT column for processing
+        if data_format == "Combined (e.g., DK12345678)":
+            # Use the selected combined column directly
+            df['_combined_vat'] = df[vat_column].astype(str)
+        else:
+            # Concatenate country code + VAT number
+            df['_combined_vat'] = df[country_column].astype(str).str.strip() + df[number_column].astype(str).str.strip()
+
         # Remove duplicate VAT numbers (keep first occurrence with its name)
         original_count = len(df)
         if enable_fraud_detection and name_column:
             # Keep VAT and Name columns for deduplication
-            df_unique = df.drop_duplicates(subset=[vat_column], keep='first')
-            unique_vat_numbers = df_unique[vat_column].tolist()
+            df_unique = df.drop_duplicates(subset=['_combined_vat'], keep='first')
+            unique_vat_numbers = df_unique['_combined_vat'].tolist()
             customer_names = df_unique[name_column].tolist()
         else:
-            unique_vat_numbers = df[vat_column].drop_duplicates().tolist()
+            unique_vat_numbers = df['_combined_vat'].drop_duplicates().tolist()
             customer_names = [None] * len(unique_vat_numbers)
 
         unique_count = len(unique_vat_numbers)
