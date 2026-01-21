@@ -599,7 +599,7 @@ with st.sidebar:
     st.markdown("- **Check Manually**: Score 40-70%")
     st.markdown("- **POTENTIAL FRAUD**: Score < 40%")
 
-uploaded_file = st.file_uploader("Choose your Excel file", type=["xlsx", "xls"])
+uploaded_file = st.file_uploader("Choose your Excel file", type=["xlsx", "xls", "xlsm"])
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
