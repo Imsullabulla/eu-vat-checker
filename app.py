@@ -704,7 +704,7 @@ with st.sidebar:
 
 uploaded_file = st.file_uploader(
     "Choose your file",
-    type=["xlsx", "xls", "xlsm", "xlsb", "ods", "csv", "numbers"]
+    type=["xlsx", "xls", "xlsm", "xlsb", "ods", "csv"]
 )
 
 if uploaded_file:
@@ -721,24 +721,6 @@ if uploaded_file:
         elif file_name.endswith('.ods'):
             # OpenDocument Spreadsheet (requires odfpy)
             df = pd.read_excel(uploaded_file, engine='odf')
-        elif file_name.endswith('.numbers'):
-            # Apple Numbers (requires numbers-parser)
-            from numbers_parser import Document
-            import tempfile
-            # Save uploaded file to temp location (numbers-parser needs a file path)
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.numbers') as tmp:
-                tmp.write(uploaded_file.getvalue())
-                tmp_path = tmp.name
-            doc = Document(tmp_path)
-            # Read first table from first sheet
-            sheets = doc.sheets
-            tables = sheets[0].tables
-            table = tables[0]
-            # Convert to DataFrame
-            data = table.rows(values_only=True)
-            df = pd.DataFrame(data[1:], columns=data[0])
-            # Clean up temp file
-            os.unlink(tmp_path)
         else:
             # Standard Excel formats (xlsx, xls, xlsm)
             df = pd.read_excel(uploaded_file)
@@ -748,9 +730,6 @@ if uploaded_file:
             st.stop()
         elif 'odfpy' in str(e):
             st.error("To read .ods files, please install odfpy: `pip install odfpy`")
-            st.stop()
-        elif 'numbers_parser' in str(e):
-            st.error("To read .numbers files, please install numbers-parser: `pip install numbers-parser`")
             st.stop()
         else:
             raise e

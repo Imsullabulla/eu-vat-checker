@@ -1,7 +1,6 @@
 # Commands
 - run: streamlit run app.py
 - install: pip install pandas streamlit requests openpyxl beautifulsoup4 thefuzz python-levenshtein
-- install (optional): pip install numbers-parser  # For .numbers file support
 
 # Build Rules
 - Language: Python 3
