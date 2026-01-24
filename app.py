@@ -299,24 +299,81 @@ def normalize_vat_input(value):
 
 
 def clean_vat_number(text):
-    """Removes spaces and extracts country code + number"""
+    """
+    Strictly cleans VAT number input.
+
+    - Extracts 2-letter country code from the beginning
+    - Removes ALL special characters (spaces, dashes, dots, etc.)
+    - Keeps only alphanumeric characters in the number portion
+
+    Example: "DK-12 34.56" -> Country="DK", Number="123456"
+    Example: "FR AB 123456789" -> Country="FR", Number="AB123456789"
+    """
+    if text is None:
+        return None, None
+
+    # Convert to uppercase and remove ALL non-alphanumeric characters
     clean_text = re.sub(r'[^A-Z0-9]', '', str(text).upper())
 
     if len(clean_text) < 3:
         return None, None
 
+    # First 2 characters must be letters (country code)
     country = clean_text[:2]
+    if not country.isalpha():
+        return None, None
+
     number = clean_text[2:]
     return country, number
 
 
+def _vies_request(url, headers, method="GET", payload=None, timeout=30):
+    """
+    Internal helper to make a single VIES API request.
+
+    Returns:
+        tuple: (success, data_or_error, debug_info)
+        - success: True if we got a valid response, False otherwise
+        - data_or_error: Parsed JSON data or error message
+        - debug_info: String with URL/payload for debugging
+    """
+    debug_info = f"Method: {method}, URL: {url}"
+    if payload:
+        debug_info += f", Payload: {payload}"
+
+    try:
+        if method == "POST":
+            response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        else:
+            response = requests.get(url, headers=headers, timeout=timeout)
+
+        if response.status_code != 200:
+            return False, f"HTTP {response.status_code}", debug_info
+
+        try:
+            data = response.json()
+            return True, data, debug_info
+        except ValueError:
+            return False, "Invalid JSON response", debug_info
+
+    except requests.exceptions.Timeout:
+        return False, "Connection timeout", debug_info
+    except requests.exceptions.ConnectionError:
+        return False, "Connection error", debug_info
+    except Exception as e:
+        return False, f"Error: {str(e)[:50]}", debug_info
+
+
 def check_vat(country, number, max_retries=None, requester_country=None, requester_number=None):
     """
-    Queries EU VIES API for VAT validation with smart retry logic.
+    Queries EU VIES API for VAT validation using a two-step strategy:
+
+    Step 1 (POST): If requester VAT is provided, try POST for legal Consultation ID
+    Step 2 (GET):  Fallback to simple GET if POST fails or returns invalid
 
     Args:
         country: 2-letter country code
-        number: VAT number without country code
+        number: VAT number without country code (alphanumeric only)
         max_retries: Override default MAX_RETRIES (used by circuit breaker)
         requester_country: Requester's 2-letter country code (for POST method)
         requester_number: Requester's VAT number without country code (for POST method)
@@ -327,137 +384,63 @@ def check_vat(country, number, max_retries=None, requester_country=None, request
             - name: Company name from VIES
             - address: Company address from VIES
             - request_date: ISO date string
-            - request_identifier: Consultation number
+            - request_identifier: Consultation number (legal proof)
             - error_type: 'none', 'invalid', 'service_unavailable', 'format_error'
             - error_detail: Specific error message for debugging
+            - debug_info: URL/Payload sent (for troubleshooting)
             - vat_number: The VAT number checked
     """
     if max_retries is None:
         max_retries = MAX_RETRIES
 
-    # Determine if we should use POST (with requester info) or GET (anonymous)
-    use_post = requester_country and requester_number
-
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json',
         'Accept-Language': 'en-US,en;q=0.9',
+        'Content-Type': 'application/json',
     }
 
-    if use_post:
-        headers['Content-Type'] = 'application/json'
+    # Collect debug info for troubleshooting
+    all_debug_info = []
 
-    last_error = None
+    # --- STEP 1: Try POST with requester info (for Consultation ID) ---
+    post_result = None
+    if requester_country and requester_number:
+        payload = {
+            "countryCode": country,
+            "vatNumber": number,
+            "requesterMemberStateCode": requester_country,
+            "requesterNumber": requester_number
+        }
 
-    for attempt in range(max_retries):
-        try:
-            # Rate limiting - polite delay per thread
-            time.sleep(0.5)
+        for attempt in range(max_retries):
+            time.sleep(0.5)  # Rate limiting
 
-            if use_post:
-                # POST method with requester identification (returns Consultation ID)
-                payload = {
-                    "countryCode": country,
-                    "vatNumber": number,
-                    "requesterMemberStateCode": requester_country,
-                    "requesterNumber": requester_number
-                }
-                response = requests.post(API_URL_POST, headers=headers, json=payload, timeout=30)
-            else:
-                # GET method (anonymous, may not return Consultation ID)
-                full_url = API_URL_GET.format(country, number)
-                response = requests.get(full_url, headers=headers, timeout=30)
+            success, data, debug_info = _vies_request(
+                API_URL_POST, headers, method="POST", payload=payload
+            )
+            all_debug_info.append(f"POST attempt {attempt + 1}: {debug_info}")
 
-            # --- Handle HTTP error codes ---
-            if response.status_code in RETRY_HTTP_CODES:
-                last_error = f"HTTP_{response.status_code}"
+            if not success:
+                # Network/HTTP error - retry
                 if attempt < max_retries - 1:
                     time.sleep(RETRY_DELAY)
                     continue
-                # Max retries exceeded - return as service unavailable
-                return {
-                    "valid": None,  # Unknown - NOT False!
-                    "name": "---",
-                    "address": "---",
-                    "request_date": "",
-                    "request_identifier": "",
-                    "error_type": "service_unavailable",
-                    "error_detail": f"HTTP {response.status_code} after {max_retries} attempts",
-                    "vat_number": number
-                }
+                break
 
-            # --- Handle non-200 responses ---
-            if response.status_code != 200:
-                return {
-                    "valid": None,
-                    "name": "---",
-                    "address": "---",
-                    "request_date": "",
-                    "request_identifier": "",
-                    "error_type": "service_unavailable",
-                    "error_detail": f"Unexpected HTTP {response.status_code}",
-                    "vat_number": number
-                }
-
-            # --- Parse JSON response ---
-            try:
-                data = response.json()
-            except ValueError:
-                return {
-                    "valid": None,
-                    "name": "---",
-                    "address": "---",
-                    "request_date": "",
-                    "request_identifier": "",
-                    "error_type": "service_unavailable",
-                    "error_detail": "Invalid JSON response",
-                    "vat_number": number
-                }
-
-            # --- Check for JSON-level errors (HTTP 200 but error in body) ---
+            # Check for service unavailable errors
             user_error = data.get("userError", "")
-
-            # Check if this is a service unavailable error
             if user_error in SERVICE_UNAVAILABLE_ERRORS:
-                last_error = user_error
                 if attempt < max_retries - 1:
                     time.sleep(RETRY_DELAY)
                     continue
-                # Max retries exceeded
-                return {
-                    "valid": None,  # Unknown - NOT False!
-                    "name": "---",
-                    "address": "---",
-                    "request_date": data.get("requestDate", ""),
-                    "request_identifier": data.get("requestIdentifier", ""),
-                    "error_type": "service_unavailable",
-                    "error_detail": f"{user_error} after {max_retries} attempts",
-                    "vat_number": data.get("vatNumber", number)
-                }
+                break
 
-            # --- Check for explicit "error" field in JSON ---
-            if "error" in data:
-                error_msg = data.get("error", "Unknown error")
-                if any(err in str(error_msg).upper() for err in SERVICE_UNAVAILABLE_ERRORS):
-                    if attempt < max_retries - 1:
-                        time.sleep(RETRY_DELAY)
-                        continue
-                    return {
-                        "valid": None,
-                        "name": "---",
-                        "address": "---",
-                        "request_date": "",
-                        "request_identifier": "",
-                        "error_type": "service_unavailable",
-                        "error_detail": str(error_msg),
-                        "vat_number": number
-                    }
-
-            # --- Success case: We got a definitive answer ---
+            # We got a definitive answer from POST
             is_valid = data.get("isValid", False)
 
             if is_valid:
-                # Definitively VALID
+                # SUCCESS with POST - return with Consultation ID
                 return {
                     "valid": True,
                     "name": data.get("name", "---"),
@@ -466,26 +449,33 @@ def check_vat(country, number, max_retries=None, requester_country=None, request
                     "request_identifier": data.get("requestIdentifier", ""),
                     "error_type": "none",
                     "error_detail": "",
+                    "debug_info": " | ".join(all_debug_info),
                     "vat_number": data.get("vatNumber", number)
                 }
             else:
-                # Definitively INVALID (userError should be "INVALID" or empty with isValid=false)
-                return {
+                # POST says invalid - save result but continue to GET fallback
+                post_result = {
                     "valid": False,
-                    "name": data.get("name", "---"),
-                    "address": data.get("address", "---"),
-                    "request_date": data.get("requestDate", ""),
-                    "request_identifier": data.get("requestIdentifier", ""),
-                    "error_type": "invalid",
-                    "error_detail": user_error if user_error else "VAT number not found",
-                    "vat_number": data.get("vatNumber", number)
+                    "data": data,
+                    "user_error": user_error
                 }
+                break
 
-        except requests.exceptions.Timeout:
-            last_error = "TIMEOUT"
+    # --- STEP 2: Fallback to GET (simple anonymous check) ---
+    get_url = API_URL_GET.format(country, number)
+
+    for attempt in range(max_retries):
+        time.sleep(0.5)  # Rate limiting
+
+        success, data, debug_info = _vies_request(get_url, headers, method="GET")
+        all_debug_info.append(f"GET attempt {attempt + 1}: {debug_info}")
+
+        if not success:
+            # Network/HTTP error - retry
             if attempt < max_retries - 1:
                 time.sleep(RETRY_DELAY)
                 continue
+            # Max retries exceeded
             return {
                 "valid": None,
                 "name": "---",
@@ -493,12 +483,14 @@ def check_vat(country, number, max_retries=None, requester_country=None, request
                 "request_date": "",
                 "request_identifier": "",
                 "error_type": "service_unavailable",
-                "error_detail": f"Connection timeout after {max_retries} attempts",
+                "error_detail": f"{data} after {max_retries} attempts",
+                "debug_info": " | ".join(all_debug_info),
                 "vat_number": number
             }
 
-        except requests.exceptions.ConnectionError as e:
-            last_error = "CONNECTION_ERROR"
+        # Check for service unavailable errors
+        user_error = data.get("userError", "")
+        if user_error in SERVICE_UNAVAILABLE_ERRORS:
             if attempt < max_retries - 1:
                 time.sleep(RETRY_DELAY)
                 continue
@@ -506,27 +498,42 @@ def check_vat(country, number, max_retries=None, requester_country=None, request
                 "valid": None,
                 "name": "---",
                 "address": "---",
-                "request_date": "",
-                "request_identifier": "",
+                "request_date": data.get("requestDate", ""),
+                "request_identifier": data.get("requestIdentifier", ""),
                 "error_type": "service_unavailable",
-                "error_detail": f"Connection error after {max_retries} attempts",
-                "vat_number": number
+                "error_detail": f"{user_error} after {max_retries} attempts",
+                "debug_info": " | ".join(all_debug_info),
+                "vat_number": data.get("vatNumber", number)
             }
 
-        except Exception as e:
-            last_error = str(e)[:50]
-            if attempt < max_retries - 1:
-                time.sleep(RETRY_DELAY)
-                continue
+        # We got a definitive answer from GET
+        is_valid = data.get("isValid", False)
+
+        if is_valid:
+            # VALID via GET (no Consultation ID usually)
             return {
-                "valid": None,
-                "name": "---",
-                "address": "---",
-                "request_date": "",
-                "request_identifier": "",
-                "error_type": "service_unavailable",
-                "error_detail": f"Error: {str(e)[:50]}",
-                "vat_number": number
+                "valid": True,
+                "name": data.get("name", "---"),
+                "address": data.get("address", "---"),
+                "request_date": data.get("requestDate", ""),
+                "request_identifier": data.get("requestIdentifier", ""),
+                "error_type": "none",
+                "error_detail": "",
+                "debug_info": " | ".join(all_debug_info),
+                "vat_number": data.get("vatNumber", number)
+            }
+        else:
+            # Both POST and GET say invalid - definitely invalid
+            return {
+                "valid": False,
+                "name": data.get("name", "---"),
+                "address": data.get("address", "---"),
+                "request_date": data.get("requestDate", ""),
+                "request_identifier": data.get("requestIdentifier", ""),
+                "error_type": "invalid",
+                "error_detail": user_error if user_error else "VAT number not found",
+                "debug_info": " | ".join(all_debug_info),
+                "vat_number": data.get("vatNumber", number)
             }
 
     # Fallback (should not reach here)
@@ -537,7 +544,8 @@ def check_vat(country, number, max_retries=None, requester_country=None, request
         "request_date": "",
         "request_identifier": "",
         "error_type": "service_unavailable",
-        "error_detail": f"Max retries exceeded: {last_error}",
+        "error_detail": "Max retries exceeded",
+        "debug_info": " | ".join(all_debug_info) if all_debug_info else "No requests made",
         "vat_number": number
     }
 
@@ -692,21 +700,30 @@ def process_single_vat(index, raw_vat, customer_name=None, requester_country=Non
         status = "Unknown"
         result = "Unknown"
 
+    # Build result dictionary
+    result_dict = {
+        "No.": index + 1,
+        "Name from Output (VIES)": response["name"],
+        "Address from Output (VIES)": response["address"],
+        "Country": country,
+        "VAT Registration No.": response["vat_number"],
+        "VIES Validation Status": status,
+        "Validation Result": result,
+        "Validation Date & Time": format_datetime(response["request_date"]),
+        "Correct Format": "---",
+        "Consultation ID": response["request_identifier"] if response["request_identifier"] else "N/A",
+    }
+
+    # Add debug info only for Invalid results (for troubleshooting)
+    if status == "Invalid" and response.get("debug_info"):
+        result_dict["Debug Info"] = response["debug_info"]
+
+    # Add fraud detection columns
+    result_dict.update(fraud_columns)
+
     return {
         "index": index,
-        "result": {
-            "No.": index + 1,
-            "Name from Output (VIES)": response["name"],
-            "Address from Output (VIES)": response["address"],
-            "Country": country,
-            "VAT Registration No.": response["vat_number"],
-            "VIES Validation Status": status,
-            "Validation Result": result,
-            "Validation Date & Time": format_datetime(response["request_date"]),
-            "Correct Format": "---",
-            "Consultation ID": response["request_identifier"] if response["request_identifier"] else "N/A",
-            **fraud_columns
-        }
+        "result": result_dict
     }
 
 
@@ -1142,7 +1159,8 @@ if uploaded_file:
             "Validation Result",
             "Validation Date & Time",
             "Correct Format",
-            "Consultation ID"
+            "Consultation ID",
+            "Debug Info"
         ]
         fraud_columns = ["Customer Name (Input)", "Name Match Score", "Identity Risk"]
 
