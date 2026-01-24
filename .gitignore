@@ -21,6 +21,7 @@ Thumbs.db
 # Temp files
 temp.xlsx
 *.tmp
+cache/
 
 # Test data files (optional - remove lines below if you want to include them)
 *.xlsx

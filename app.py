@@ -3,6 +3,8 @@ import pandas as pd
 import requests
 import time
 import re
+import uuid
+import os
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
@@ -10,6 +12,96 @@ from thefuzz import fuzz
 
 # --- SETUP ---
 st.set_page_config(page_title="EU VAT Checker", layout="wide")
+
+# --- SESSION-BASED ISOLATION FOR MULTI-USER SAFETY ---
+# Generate unique session ID for each user to prevent race conditions
+if 'session_id' not in st.session_state:
+    st.session_state['session_id'] = str(uuid.uuid4())
+
+# Cache directory for checkpoint files
+CACHE_DIR = "cache"
+
+def get_cache_filename():
+    """Returns the session-specific cache filename"""
+    return os.path.join(CACHE_DIR, f"cache_{st.session_state['session_id']}.csv")
+
+def ensure_cache_dir():
+    """Creates cache directory if it doesn't exist"""
+    if not os.path.exists(CACHE_DIR):
+        try:
+            os.makedirs(CACHE_DIR)
+        except OSError:
+            pass  # Directory may have been created by another process
+
+def save_checkpoint(results_dict, tasks_total, completed_indices):
+    """
+    Saves current progress to a session-specific cache file.
+
+    Args:
+        results_dict: Dictionary of {index: result_dict} for completed items
+        tasks_total: Total number of tasks to process
+        completed_indices: Set of indices that have been completed
+    """
+    ensure_cache_dir()
+    cache_file = get_cache_filename()
+
+    try:
+        # Convert results to DataFrame
+        if results_dict:
+            sorted_results = [results_dict[i] for i in sorted(results_dict.keys())]
+            df = pd.DataFrame(sorted_results)
+            # Add metadata columns
+            df['_checkpoint_total'] = tasks_total
+            df['_checkpoint_index'] = list(sorted(results_dict.keys()))
+            df.to_csv(cache_file, index=False)
+    except Exception:
+        pass  # Silently fail to avoid disrupting the main process
+
+def load_checkpoint():
+    """
+    Loads progress from session-specific cache file if it exists.
+
+    Returns:
+        tuple: (results_dict, completed_indices, tasks_total) or (None, None, None) if no checkpoint
+    """
+    cache_file = get_cache_filename()
+
+    if not os.path.exists(cache_file):
+        return None, None, None
+
+    try:
+        df = pd.read_csv(cache_file)
+
+        if df.empty or '_checkpoint_total' not in df.columns:
+            return None, None, None
+
+        tasks_total = int(df['_checkpoint_total'].iloc[0])
+        completed_indices = set(df['_checkpoint_index'].astype(int).tolist())
+
+        # Remove metadata columns and reconstruct results_dict
+        result_columns = [col for col in df.columns if not col.startswith('_checkpoint_')]
+        results_df = df[result_columns]
+
+        results_dict = {}
+        for idx, row in zip(df['_checkpoint_index'].astype(int), results_df.to_dict('records')):
+            results_dict[idx] = row
+
+        return results_dict, completed_indices, tasks_total
+    except Exception:
+        return None, None, None
+
+def cleanup_checkpoint():
+    """Deletes the session-specific cache file to free disk space"""
+    cache_file = get_cache_filename()
+    try:
+        if os.path.exists(cache_file):
+            os.remove(cache_file)
+    except Exception:
+        pass  # Silently fail
+
+def has_checkpoint():
+    """Checks if a checkpoint file exists for this session"""
+    return os.path.exists(get_cache_filename())
 
 API_URL = "https://ec.europa.eu/taxation_customs/vies/rest-api/ms/{}/vat/{}"
 MAX_WORKERS = 5  # Number of concurrent threads
@@ -728,7 +820,29 @@ if uploaded_file:
         )
         st.success(f"Will compare names from **{name_column}** with VIES records.")
 
-    if st.button("Start Validation"):
+    # --- CHECKPOINT/RESUME DETECTION ---
+    # Check if there's a saved checkpoint for this session
+    checkpoint_exists = has_checkpoint()
+    resume_mode = False
+
+    if checkpoint_exists:
+        st.warning("A previous validation was interrupted. Would you like to resume?")
+        col_resume, col_restart = st.columns(2)
+        with col_resume:
+            if st.button("Resume Previous Validation", type="primary"):
+                resume_mode = True
+                st.session_state['resume_requested'] = True
+        with col_restart:
+            if st.button("Start Fresh (Delete Checkpoint)"):
+                cleanup_checkpoint()
+                st.session_state['resume_requested'] = False
+                st.rerun()
+
+    # Handle resume request from previous interaction
+    if st.session_state.get('resume_requested', False):
+        resume_mode = True
+
+    if st.button("Start Validation") or resume_mode:
 
         # Reset circuit breaker counters for new validation run
         country_error_count.clear()
@@ -803,13 +917,28 @@ if uploaded_file:
             st.warning(f"Removed {duplicates_removed} duplicate VAT numbers. Processing {unique_count} unique numbers.")
 
         total = unique_count
-        completed_count = 0
 
         # Prepare list of tasks: (index, vat_number, customer_name)
-        tasks = [(i, vat, name) for i, (vat, name) in enumerate(unique_data)]
+        all_tasks = [(i, vat, name) for i, (vat, name) in enumerate(unique_data)]
 
-        # Results dictionary to maintain order
+        # --- RESUME LOGIC: Load checkpoint if resuming ---
         results_dict = {}
+        completed_indices = set()
+
+        if resume_mode:
+            cached_results, cached_indices, cached_total = load_checkpoint()
+            if cached_results and cached_indices:
+                results_dict = cached_results
+                completed_indices = cached_indices
+                st.info(f"Resuming from checkpoint: {len(completed_indices)}/{total} already completed.")
+
+        # Filter out already-completed tasks
+        tasks = [(idx, vat, name) for idx, vat, name in all_tasks if idx not in completed_indices]
+        completed_count = len(completed_indices)
+
+        # Checkpoint saving interval (save every N completions)
+        CHECKPOINT_INTERVAL = 10
+        last_checkpoint_count = completed_count
 
         # Start timer for time estimation
         start_time = time.time()
@@ -828,21 +957,33 @@ if uploaded_file:
 
                     with results_lock:
                         results_dict[index] = result_data["result"]
+                        completed_indices.add(index)
                         completed_count += 1
 
                     # Update progress bar
                     progress_bar.progress(completed_count / total)
 
+                    # --- CHECKPOINT SAVING ---
+                    # Save checkpoint every CHECKPOINT_INTERVAL completions
+                    if completed_count - last_checkpoint_count >= CHECKPOINT_INTERVAL:
+                        save_checkpoint(results_dict, total, completed_indices)
+                        last_checkpoint_count = completed_count
+
                     # Calculate time estimation
                     elapsed_time = time.time() - start_time
-                    if completed_count > 0:
-                        avg_time_per_item = elapsed_time / completed_count
-                        items_remaining = total - completed_count
-                        estimated_seconds_left = avg_time_per_item * items_remaining
-                        time_remaining_str = format_time_remaining(estimated_seconds_left)
+                    if completed_count > len(completed_indices - {index}):  # At least 1 new completion
+                        # Calculate based on newly processed items only
+                        newly_processed = completed_count - (len(completed_indices) - len(tasks))
+                        if newly_processed > 0:
+                            avg_time_per_item = elapsed_time / newly_processed
+                            items_remaining = total - completed_count
+                            estimated_seconds_left = avg_time_per_item * items_remaining
+                            time_remaining_str = format_time_remaining(estimated_seconds_left)
 
-                        if items_remaining > 0:
-                            status_text.text(f"Processing {completed_count}/{total} (Est. time remaining: {time_remaining_str})")
+                            if items_remaining > 0:
+                                status_text.text(f"Processing {completed_count}/{total} (Est. time remaining: {time_remaining_str})")
+                            else:
+                                status_text.text(f"Processing {completed_count}/{total}...")
                         else:
                             status_text.text(f"Processing {completed_count}/{total}...")
                     else:
@@ -865,8 +1006,14 @@ if uploaded_file:
                             "Name Match Score": "---",
                             "Identity Risk": "---"
                         }
+                        completed_indices.add(idx)
                         completed_count += 1
                     progress_bar.progress(completed_count / total)
+
+                    # Save checkpoint on error too
+                    if completed_count - last_checkpoint_count >= CHECKPOINT_INTERVAL:
+                        save_checkpoint(results_dict, total, completed_indices)
+                        last_checkpoint_count = completed_count
 
         # Sort results by original index
         results = [results_dict[i] for i in sorted(results_dict.keys())]
@@ -878,6 +1025,11 @@ if uploaded_file:
         # Clear the turbo mode notification and progress bar
         turbo_mode_placeholder.empty()
         progress_bar_placeholder.empty()
+
+        # --- CLEANUP: Delete checkpoint file after successful completion ---
+        cleanup_checkpoint()
+        if 'resume_requested' in st.session_state:
+            del st.session_state['resume_requested']
 
         # Store results in session state so they persist after download
         st.session_state['validation_results'] = results
@@ -962,16 +1114,24 @@ if uploaded_file:
         st.dataframe(styled_df, use_container_width=True)
 
         # Download buttons
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             csv = result_df.to_csv(index=False).encode('utf-8')
             st.download_button("Download CSV", csv, "vat_results.csv", "text/csv", key="download_csv")
         with col2:
-            excel_buffer = pd.ExcelWriter("temp.xlsx", engine='openpyxl')
+            # Use session-specific temp file to avoid race conditions
+            temp_excel_file = os.path.join(CACHE_DIR, f"temp_{st.session_state['session_id']}.xlsx")
+            ensure_cache_dir()
+            excel_buffer = pd.ExcelWriter(temp_excel_file, engine='openpyxl')
             result_df.to_excel(excel_buffer, index=False)
             excel_buffer.close()
-            with open("temp.xlsx", "rb") as f:
+            with open(temp_excel_file, "rb") as f:
                 excel_data = f.read()
+            # Clean up temp excel file after reading
+            try:
+                os.remove(temp_excel_file)
+            except Exception:
+                pass
             st.download_button("Download Excel", excel_data, "vat_results.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_excel")
         with col3:
             if duplicate_data:
@@ -986,3 +1146,12 @@ if uploaded_file:
                 )
             else:
                 st.info("No duplicates found")
+        with col4:
+            if st.button("Start Over", key="start_over"):
+                # Clean up any session files and reset state
+                cleanup_checkpoint()
+                for key in ['validation_results', 'duplicate_data', 'total_time_str',
+                           'total_count', 'fraud_detection_enabled', 'resume_requested', 'current_file']:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                st.rerun()
