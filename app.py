@@ -103,7 +103,8 @@ def has_checkpoint():
     """Checks if a checkpoint file exists for this session"""
     return os.path.exists(get_cache_filename())
 
-API_URL = "https://ec.europa.eu/taxation_customs/vies/rest-api/ms/{}/vat/{}"
+API_URL_GET = "https://ec.europa.eu/taxation_customs/vies/rest-api/ms/{}/vat/{}"
+API_URL_POST = "https://ec.europa.eu/taxation_customs/vies/rest-api/check-vat-number"
 MAX_WORKERS = 5  # Number of concurrent threads
 MAX_RETRIES = 3  # Number of retry attempts for failed requests
 RETRY_DELAY = 2  # Seconds to wait between retries
@@ -309,7 +310,7 @@ def clean_vat_number(text):
     return country, number
 
 
-def check_vat(country, number, max_retries=None):
+def check_vat(country, number, max_retries=None, requester_country=None, requester_number=None):
     """
     Queries EU VIES API for VAT validation with smart retry logic.
 
@@ -317,6 +318,8 @@ def check_vat(country, number, max_retries=None):
         country: 2-letter country code
         number: VAT number without country code
         max_retries: Override default MAX_RETRIES (used by circuit breaker)
+        requester_country: Requester's 2-letter country code (for POST method)
+        requester_number: Requester's VAT number without country code (for POST method)
 
     Returns:
         dict with keys:
@@ -332,13 +335,17 @@ def check_vat(country, number, max_retries=None):
     if max_retries is None:
         max_retries = MAX_RETRIES
 
-    full_url = API_URL.format(country, number)
+    # Determine if we should use POST (with requester info) or GET (anonymous)
+    use_post = requester_country and requester_number
 
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json',
         'Accept-Language': 'en-US,en;q=0.9',
     }
+
+    if use_post:
+        headers['Content-Type'] = 'application/json'
 
     last_error = None
 
@@ -347,7 +354,19 @@ def check_vat(country, number, max_retries=None):
             # Rate limiting - polite delay per thread
             time.sleep(0.5)
 
-            response = requests.get(full_url, headers=headers, timeout=30)
+            if use_post:
+                # POST method with requester identification (returns Consultation ID)
+                payload = {
+                    "countryCode": country,
+                    "vatNumber": number,
+                    "requesterMemberStateCode": requester_country,
+                    "requesterNumber": requester_number
+                }
+                response = requests.post(API_URL_POST, headers=headers, json=payload, timeout=30)
+            else:
+                # GET method (anonymous, may not return Consultation ID)
+                full_url = API_URL_GET.format(country, number)
+                response = requests.get(full_url, headers=headers, timeout=30)
 
             # --- Handle HTTP error codes ---
             if response.status_code in RETRY_HTTP_CODES:
@@ -561,7 +580,7 @@ def format_time_remaining(seconds):
         return f"{hours}h"
 
 
-def process_single_vat(index, raw_vat, customer_name=None):
+def process_single_vat(index, raw_vat, customer_name=None, requester_country=None, requester_number=None):
     """Process a single VAT number and return result with index for ordering"""
     country, number = clean_vat_number(raw_vat)
 
@@ -586,6 +605,7 @@ def process_single_vat(index, raw_vat, customer_name=None):
                 "Validation Result": "Unknown",
                 "Validation Date & Time": datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
                 "Correct Format": "Must start with 2-letter country code (e.g., DK, DE, FR)",
+                "Consultation ID": "N/A",
                 **fraud_columns
             }
         }
@@ -604,6 +624,7 @@ def process_single_vat(index, raw_vat, customer_name=None):
                 "Validation Result": "Unknown",
                 "Validation Date & Time": datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
                 "Correct Format": f"'{country}' is not a valid EU country code",
+                "Consultation ID": "N/A",
                 **fraud_columns
             }
         }
@@ -625,6 +646,7 @@ def process_single_vat(index, raw_vat, customer_name=None):
                 "Validation Result": "Unknown",
                 "Validation Date & Time": datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
                 "Correct Format": f"{correct_format} ({format_desc})",
+                "Consultation ID": "N/A",
                 **fraud_columns
             }
         }
@@ -636,9 +658,11 @@ def process_single_vat(index, raw_vat, customer_name=None):
 
     # If country has 3+ errors, reduce retries to 1
     if country_errors >= CIRCUIT_BREAKER_THRESHOLD:
-        response = check_vat(country, number, max_retries=1)
+        response = check_vat(country, number, max_retries=1,
+                            requester_country=requester_country, requester_number=requester_number)
     else:
-        response = check_vat(country, number)
+        response = check_vat(country, number,
+                            requester_country=requester_country, requester_number=requester_number)
 
     # Determine display status based on error_type and valid flag
     if response["error_type"] == "none" and response["valid"] is True:
@@ -680,6 +704,7 @@ def process_single_vat(index, raw_vat, customer_name=None):
             "Validation Result": result,
             "Validation Date & Time": format_datetime(response["request_date"]),
             "Correct Format": "---",
+            "Consultation ID": response["request_identifier"] if response["request_identifier"] else "N/A",
             **fraud_columns
         }
     }
@@ -690,8 +715,18 @@ def process_single_vat(index, raw_vat, customer_name=None):
 st.title("EU VAT Bulk Checker")
 st.markdown("Upload an Excel file with VAT numbers (include country code, e.g. DK12345678).")
 
-# Sidebar for fraud detection settings
+# Sidebar for settings
 with st.sidebar:
+    st.header("Legal Documentation")
+    st.markdown("Enter your own VAT number to receive a legally valid Consultation ID (proof of verification).")
+    requester_vat_input = st.text_input(
+        "Your VAT Number",
+        value="",
+        placeholder="e.g. DK12345678",
+        help="Required for legal proof. Without this, Consultation ID will be N/A."
+    )
+
+    st.markdown("---")
     st.header("Fraud Detection")
     st.markdown("Compare customer names from your file with official VIES records.")
     enable_fraud_detection = st.checkbox("Enable Name Verification", value=False)
@@ -844,6 +879,18 @@ if uploaded_file:
 
     if st.button("Start Validation") or resume_mode:
 
+        # Parse requester VAT for legal documentation (Consultation ID)
+        requester_country = None
+        requester_number = None
+        if requester_vat_input and requester_vat_input.strip():
+            req_country, req_number = clean_vat_number(requester_vat_input.strip())
+            if req_country and req_number and req_country in EU_VAT_FORMATS:
+                requester_country = req_country
+                requester_number = req_number
+                st.info(f"Using requester VAT: {requester_country}{requester_number} for legal documentation.")
+            else:
+                st.warning("Invalid requester VAT format. Proceeding without legal documentation (Consultation ID will be N/A).")
+
         # Reset circuit breaker counters for new validation run
         country_error_count.clear()
 
@@ -946,7 +993,7 @@ if uploaded_file:
         # Process with ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             future_to_index = {
-                executor.submit(process_single_vat, idx, vat, name): idx
+                executor.submit(process_single_vat, idx, vat, name, requester_country, requester_number): idx
                 for idx, vat, name in tasks
             }
 
@@ -1002,6 +1049,7 @@ if uploaded_file:
                             "Validation Result": "Unknown",
                             "Validation Date & Time": datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
                             "Correct Format": "---",
+                            "Consultation ID": "N/A",
                             "Customer Name (Input)": "---",
                             "Name Match Score": "---",
                             "Identity Risk": "---"
@@ -1078,6 +1126,31 @@ if uploaded_file:
                 fcol3.metric("POTENTIAL FRAUD", fraud_count)
 
         result_df = pd.DataFrame(results)
+
+        # Ensure Consultation ID is treated as string (prevents truncation of long numbers)
+        if "Consultation ID" in result_df.columns:
+            result_df["Consultation ID"] = result_df["Consultation ID"].astype(str)
+
+        # Define explicit column order (Consultation ID right after Correct Format)
+        base_columns = [
+            "No.",
+            "Name from Output (VIES)",
+            "Address from Output (VIES)",
+            "Country",
+            "VAT Registration No.",
+            "VIES Validation Status",
+            "Validation Result",
+            "Validation Date & Time",
+            "Correct Format",
+            "Consultation ID"
+        ]
+        fraud_columns = ["Customer Name (Input)", "Name Match Score", "Identity Risk"]
+
+        # Build final column order based on what's available
+        final_columns = [col for col in base_columns if col in result_df.columns]
+        if fraud_detection_enabled:
+            final_columns.extend([col for col in fraud_columns if col in result_df.columns])
+        result_df = result_df[final_columns]
 
         # Remove fraud detection columns if not enabled
         if not fraud_detection_enabled:
