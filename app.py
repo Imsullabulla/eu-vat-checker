@@ -781,10 +781,6 @@ def process_single_vat(index, raw_vat, customer_name=None, requester_country=Non
         "Consultation ID": response["request_identifier"] if response["request_identifier"] else "N/A",
     }
 
-    # Add debug info only for Invalid results (for troubleshooting)
-    if status == "Invalid" and response.get("debug_info"):
-        result_dict["Debug Info"] = response["debug_info"]
-
     # Add fraud detection columns
     result_dict.update(fraud_columns)
 
@@ -1256,8 +1252,7 @@ if uploaded_file:
             "Validation Result",
             "Validation Date & Time",
             "Correct Format",
-            "Consultation ID",
-            "Debug Info"
+            "Consultation ID"
         ]
         fraud_columns = ["Customer Name (Input)", "Name Match Score", "Identity Risk"]
 
