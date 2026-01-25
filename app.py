@@ -226,11 +226,11 @@ def get_identity_risk(score):
     Determine identity risk level based on similarity score.
 
     Thresholds:
-    - > 80: High confidence match (Verified)
-    - 20-80: Partial match, needs manual review (Check Manually)
+    - > 60: High confidence match (Verified)
+    - 20-60: Partial match, needs manual review (Check Manually)
     - < 20: Little to no resemblance (POTENTIAL FRAUD)
     """
-    if score > 80:
+    if score > 60:
         return "Verified"
     elif score >= 20:
         return "Check Manually"
@@ -364,6 +364,50 @@ def _vies_request(url, headers, method="GET", payload=None, timeout=30):
         return False, f"Error: {str(e)[:50]}", debug_info
 
 
+def validate_requester_vat(country, number):
+    """
+    Validates the requester's VAT number by making a quick GET request.
+
+    Returns:
+        tuple: (is_valid, company_name, error_message)
+        - is_valid: True if VAT is valid, False otherwise
+        - company_name: Company name if valid, None otherwise
+        - error_message: Error message if invalid, None otherwise
+    """
+    if not country or not number:
+        return False, None, "Country and number are required"
+
+    # Clean the number
+    clean_number = re.sub(r'[^A-Z0-9]', '', str(number).upper())
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/json',
+    }
+
+    url = API_URL_GET.format(country, clean_number)
+
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code != 200:
+            return False, None, f"HTTP {response.status_code}"
+
+        data = response.json()
+
+        if data.get("isValid"):
+            return True, data.get("name", "Unknown"), None
+        else:
+            user_error = data.get("userError", "INVALID")
+            return False, None, f"VAT not found in VIES ({user_error})"
+
+    except requests.exceptions.Timeout:
+        return False, None, "Connection timeout"
+    except requests.exceptions.ConnectionError:
+        return False, None, "Connection error"
+    except Exception as e:
+        return False, None, f"Error: {str(e)[:50]}"
+
+
 def check_vat(country, number, max_retries=None, requester_country=None, requester_number=None):
     """
     Queries EU VIES API for VAT validation using a two-step strategy:
@@ -393,6 +437,10 @@ def check_vat(country, number, max_retries=None, requester_country=None, request
     if max_retries is None:
         max_retries = MAX_RETRIES
 
+    # Clean requester_number as a safety measure (remove any remaining special chars)
+    if requester_number:
+        requester_number = re.sub(r'[^A-Z0-9]', '', str(requester_number).upper())
+
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json',
@@ -404,7 +452,7 @@ def check_vat(country, number, max_retries=None, requester_country=None, request
     all_debug_info = []
 
     # --- STEP 1: Try POST with requester info (for Consultation ID) ---
-    post_result = None
+    # Only attempt POST if both requester_country and requester_number are provided
     if requester_country and requester_number:
         payload = {
             "countryCode": country,
@@ -428,7 +476,25 @@ def check_vat(country, number, max_retries=None, requester_country=None, request
                     continue
                 break
 
-            # Check for service unavailable errors
+            # Check for actionSucceed=false (error response format)
+            # Example: {"actionSucceed": false, "errorWrappers": [{"error": "INVALID_REQUESTER_INFO"}]}
+            if data.get("actionSucceed") is False:
+                error_wrappers = data.get("errorWrappers", [])
+                error_codes = [e.get("error", "") for e in error_wrappers]
+                all_debug_info.append(f"POST error: {error_codes}")
+
+                # If requester info is invalid, skip POST and fall back to GET
+                if "INVALID_REQUESTER_INFO" in error_codes:
+                    all_debug_info.append("Requester VAT invalid - falling back to GET")
+                    break
+
+                # For other errors, retry if possible
+                if attempt < max_retries - 1:
+                    time.sleep(RETRY_DELAY)
+                    continue
+                break
+
+            # Check for service unavailable errors (standard format)
             user_error = data.get("userError", "")
             if user_error in SERVICE_UNAVAILABLE_ERRORS:
                 if attempt < max_retries - 1:
@@ -437,7 +503,8 @@ def check_vat(country, number, max_retries=None, requester_country=None, request
                 break
 
             # We got a definitive answer from POST
-            is_valid = data.get("isValid", False)
+            # Note: POST uses "valid" field, not "isValid"
+            is_valid = data.get("valid", data.get("isValid", False))
 
             if is_valid:
                 # SUCCESS with POST - return with Consultation ID
@@ -736,11 +803,26 @@ st.markdown("Upload an Excel file with VAT numbers (include country code, e.g. D
 with st.sidebar:
     st.header("Legal Documentation")
     st.markdown("Enter your own VAT number to receive a legally valid Consultation ID (proof of verification).")
-    requester_vat_input = st.text_input(
-        "Your VAT Number",
+
+    # List of EU country codes for the dropdown
+    EU_COUNTRY_CODES = [
+        "", "AT", "BE", "BG", "CY", "CZ", "DE", "DK", "EE", "EL", "ES",
+        "FI", "FR", "HR", "HU", "IE", "IT", "LT", "LU", "LV", "MT",
+        "NL", "PL", "PT", "RO", "SE", "SI", "SK", "XI"
+    ]
+
+    requester_country = st.selectbox(
+        "Your Country",
+        options=EU_COUNTRY_CODES,
+        index=0,
+        help="Select your country code"
+    )
+
+    requester_number_input = st.text_input(
+        "Your VAT Number (without country code)",
         value="",
-        placeholder="e.g. DK12345678",
-        help="Required for legal proof. Without this, Consultation ID will be N/A."
+        placeholder="e.g. 12345678",
+        help="Enter only the number part. Required for legal proof."
     )
 
     st.markdown("---")
@@ -750,8 +832,8 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("**Risk Levels:**")
-    st.markdown("- **Verified**: Score > 80%")
-    st.markdown("- **Check Manually**: Score 20-80%")
+    st.markdown("- **Verified**: Score > 60%")
+    st.markdown("- **Check Manually**: Score 20-60%")
     st.markdown("- **POTENTIAL FRAUD**: Score < 20%")
 
 uploaded_file = st.file_uploader(
@@ -896,17 +978,32 @@ if uploaded_file:
 
     if st.button("Start Validation") or resume_mode:
 
-        # Parse requester VAT for legal documentation (Consultation ID)
-        requester_country = None
-        requester_number = None
-        if requester_vat_input and requester_vat_input.strip():
-            req_country, req_number = clean_vat_number(requester_vat_input.strip())
-            if req_country and req_number and req_country in EU_VAT_FORMATS:
-                requester_country = req_country
-                requester_number = req_number
-                st.info(f"Using requester VAT: {requester_country}{requester_number} for legal documentation.")
+        # Clean and validate requester VAT for legal documentation (Consultation ID)
+        # requester_country comes directly from the selectbox
+        # requester_number_input needs to be cleaned (remove spaces, dots, dashes)
+        cleaned_requester_number = None
+        requester_valid = False
+
+        if requester_country and requester_number_input and requester_number_input.strip():
+            # Clean the number: remove all non-alphanumeric characters
+            cleaned_requester_number = re.sub(r'[^A-Z0-9]', '', requester_number_input.upper())
+
+            if cleaned_requester_number:
+                # Validate the requester VAT with VIES before proceeding
+                with st.spinner(f"Validating your VAT number ({requester_country}{cleaned_requester_number})..."):
+                    is_valid, company_name, error_msg = validate_requester_vat(requester_country, cleaned_requester_number)
+
+                if is_valid:
+                    st.success(f"Your VAT verified: {requester_country}{cleaned_requester_number} ({company_name}). Consultation IDs will be issued.")
+                    requester_valid = True
+                else:
+                    st.error(f"Your VAT ({requester_country}{cleaned_requester_number}) is NOT valid: {error_msg}")
+                    st.warning("Proceeding without legal documentation. Consultation ID will be N/A.")
+                    cleaned_requester_number = None  # Don't use invalid requester
             else:
-                st.warning("Invalid requester VAT format. Proceeding without legal documentation (Consultation ID will be N/A).")
+                st.warning("Invalid requester VAT number format. Proceeding without legal documentation.")
+        else:
+            st.info("No requester VAT provided. Consultation ID will be N/A (anonymous validation).")
 
         # Reset circuit breaker counters for new validation run
         country_error_count.clear()
@@ -1010,7 +1107,7 @@ if uploaded_file:
         # Process with ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             future_to_index = {
-                executor.submit(process_single_vat, idx, vat, name, requester_country, requester_number): idx
+                executor.submit(process_single_vat, idx, vat, name, requester_country, cleaned_requester_number): idx
                 for idx, vat, name in tasks
             }
 
