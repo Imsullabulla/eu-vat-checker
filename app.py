@@ -327,6 +327,106 @@ def clean_vat_number(text):
     return country, number
 
 
+def detect_data_format(df, vat_keywords, country_keywords):
+    """
+    Auto-detect whether VAT data is in Combined or Separate format.
+
+    Returns:
+        tuple: (format_string, detected_vat_col, detected_country_col)
+        - format_string: "Combined (e.g., DK12345678)" or "Separate Columns (Country + Number)"
+        - detected_vat_col: Best guess for VAT column
+        - detected_country_col: Best guess for country column (or None if Combined)
+    """
+    eu_country_codes = set(EU_VAT_FORMATS.keys())
+
+    # Find potential VAT and country columns by keywords
+    vat_col_by_keyword = None
+    country_col_by_keyword = None
+
+    for col in df.columns:
+        col_lower = str(col).lower()
+        if vat_col_by_keyword is None and any(kw in col_lower for kw in vat_keywords):
+            vat_col_by_keyword = col
+        if country_col_by_keyword is None and any(kw in col_lower for kw in country_keywords):
+            country_col_by_keyword = col
+
+    # Sample up to 50 non-null values from each column to analyze
+    def get_sample_values(column, max_samples=50):
+        values = df[column].dropna().head(max_samples)
+        return [str(v).strip().upper() for v in values if str(v).strip()]
+
+    def looks_like_country_code(value):
+        """Check if value looks like a standalone EU country code"""
+        clean = re.sub(r'[^A-Z]', '', value)
+        return len(clean) == 2 and clean in eu_country_codes
+
+    def looks_like_combined_vat(value):
+        """Check if value looks like a combined VAT number (country code + number)"""
+        clean = re.sub(r'[^A-Z0-9]', '', value)
+        if len(clean) < 4:
+            return False
+        prefix = clean[:2]
+        return prefix.isalpha() and prefix in eu_country_codes
+
+    # Strategy 1: Check if there's a column with primarily country codes (indicates Separate format)
+    best_country_col = None
+    best_country_score = 0
+
+    for col in df.columns:
+        samples = get_sample_values(col)
+        if not samples:
+            continue
+        country_matches = sum(1 for v in samples if looks_like_country_code(v))
+        score = country_matches / len(samples) if samples else 0
+        if score > best_country_score and score >= 0.5:  # At least 50% match
+            best_country_score = score
+            best_country_col = col
+
+    # Strategy 2: Check if VAT column (by keyword) has combined format
+    combined_score = 0
+    vat_col_to_check = vat_col_by_keyword or df.columns[0]
+
+    samples = get_sample_values(vat_col_to_check)
+    if samples:
+        combined_matches = sum(1 for v in samples if looks_like_combined_vat(v))
+        combined_score = combined_matches / len(samples)
+
+    # Decision logic
+    if best_country_col and best_country_score >= 0.5:
+        # Found a dedicated country code column - likely Separate format
+        return (
+            "Separate Columns (Country + Number)",
+            vat_col_by_keyword or df.columns[0],
+            best_country_col
+        )
+    elif combined_score >= 0.5:
+        # VAT values contain country codes - Combined format
+        return (
+            "Combined (e.g., DK12345678)",
+            vat_col_to_check,
+            None
+        )
+    else:
+        # Fallback: check all columns for combined VAT pattern
+        for col in df.columns:
+            samples = get_sample_values(col)
+            if samples:
+                matches = sum(1 for v in samples if looks_like_combined_vat(v))
+                if matches / len(samples) >= 0.5:
+                    return (
+                        "Combined (e.g., DK12345678)",
+                        col,
+                        None
+                    )
+
+        # Default to Combined if we can't determine
+        return (
+            "Combined (e.g., DK12345678)",
+            vat_col_by_keyword or df.columns[0],
+            None
+        )
+
+
 def _vies_request(url, headers, method="GET", payload=None, timeout=30):
     """
     Internal helper to make a single VIES API request.
@@ -814,12 +914,29 @@ with st.sidebar:
         help="Select your country code"
     )
 
+    # Initialize session state for confirmed VAT number
+    if 'confirmed_requester_vat' not in st.session_state:
+        st.session_state.confirmed_requester_vat = ""
+
     requester_number_input = st.text_input(
         "Your VAT Number (without country code)",
         value="",
         placeholder="e.g. 12345678",
-        help="Enter only the number part. Required for legal proof."
+        help="Enter only the number part. Required for legal proof. Press Enter to confirm.",
+        key="requester_vat_input"
     )
+
+    # Show green confirmation when Enter is pressed (value is submitted)
+    if requester_number_input and requester_number_input.strip():
+        st.session_state.confirmed_requester_vat = requester_number_input.strip()
+        st.markdown(
+            f'<div style="background-color: #d4edda; border: 1px solid #28a745; border-radius: 4px; padding: 8px; margin-top: -10px;">'
+            f'<span style="color: #155724;">✓ VAT Number confirmed: <strong>{requester_number_input.strip()}</strong></span></div>',
+            unsafe_allow_html=True
+        )
+    elif st.session_state.confirmed_requester_vat:
+        # Clear confirmation if input is emptied
+        st.session_state.confirmed_requester_vat = ""
 
     st.markdown("---")
     st.header("Fraud Detection")
@@ -878,32 +995,43 @@ if uploaded_file:
     # --- COLUMN FORMAT SELECTION ---
     st.markdown("### Data Format Configuration")
 
-    data_format = st.radio(
-        "How is the VAT data formatted?",
-        options=["Combined (e.g., DK12345678)", "Separate Columns (Country + Number)"],
-        index=0,
-        horizontal=True
-    )
-
-    # Auto-detect columns based on keywords
+    # Keywords for column detection
     vat_keywords = ["vat no.", "vat no", "vat", "momsnummer", "moms", "tax code", "taxcode", "cvr", "nummer"]
     country_keywords = ["country code", "country", "landekode", "land"]
 
-    # Find default VAT column
-    default_vat_col = None
-    for col in df.columns:
-        if any(keyword in str(col).lower() for keyword in vat_keywords):
-            default_vat_col = col
-            break
+    # Auto-detect data format based on actual values
+    detected_format, detected_vat_col, detected_country_col = detect_data_format(
+        df, vat_keywords, country_keywords
+    )
+
+    format_options = ["Combined (e.g., DK12345678)", "Separate Columns (Country + Number)"]
+    default_index = format_options.index(detected_format) if detected_format in format_options else 0
+
+    data_format = st.radio(
+        "How is the VAT data formatted?",
+        options=format_options,
+        index=default_index,
+        horizontal=True,
+        help="Auto-detected based on your data. Change if needed."
+    )
+
+    # Find default VAT column (use detected or fallback to keyword search)
+    default_vat_col = detected_vat_col
+    if default_vat_col is None:
+        for col in df.columns:
+            if any(keyword in str(col).lower() for keyword in vat_keywords):
+                default_vat_col = col
+                break
     if default_vat_col is None:
         default_vat_col = df.columns[0]
 
-    # Find default country column
-    default_country_col = None
-    for col in df.columns:
-        if any(keyword in str(col).lower() for keyword in country_keywords):
-            default_country_col = col
-            break
+    # Find default country column (use detected or fallback to keyword search)
+    default_country_col = detected_country_col
+    if default_country_col is None:
+        for col in df.columns:
+            if any(keyword in str(col).lower() for keyword in country_keywords):
+                default_country_col = col
+                break
 
     # Conditional column selectors
     if data_format == "Combined (e.g., DK12345678)":
