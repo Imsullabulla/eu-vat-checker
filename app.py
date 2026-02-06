@@ -11,7 +11,175 @@ import threading
 from thefuzz import fuzz
 
 # --- SETUP ---
-st.set_page_config(page_title="EU VAT Checker", layout="wide")
+st.set_page_config(page_title="EU VAT Checker", layout="wide", page_icon="🇪🇺")
+
+# --- CUSTOM CSS THEME ---
+st.markdown("""
+<style>
+    /* ---- Global ---- */
+    .block-container { padding-top: 1.5rem !important; max-width: 1100px; }
+
+    /* ---- Header ---- */
+    .app-header {
+        background: linear-gradient(135deg, #003399 0%, #0055a4 100%);
+        color: white;
+        padding: 1.8rem 2rem;
+        border-radius: 12px;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 4px 16px rgba(0,51,153,0.15);
+    }
+    .app-header h1 { color: white !important; margin: 0 0 0.3rem 0; font-size: 1.9rem; }
+    .app-header p { color: rgba(255,255,255,0.85); margin: 0; font-size: 0.95rem; }
+
+    /* ---- Step Indicators ---- */
+    .step-bar {
+        display: flex;
+        gap: 0;
+        margin: 0.5rem 0 1.5rem 0;
+        background: #f0f2f6;
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    .step-item {
+        flex: 1;
+        text-align: center;
+        padding: 0.6rem 0.5rem;
+        font-size: 0.82rem;
+        font-weight: 500;
+        color: #888;
+        border-right: 1px solid #e0e3e8;
+    }
+    .step-item:last-child { border-right: none; }
+    .step-active {
+        background: #003399;
+        color: white !important;
+        font-weight: 600;
+    }
+    .step-done {
+        background: #d4edda;
+        color: #155724 !important;
+    }
+
+    /* ---- Metric Cards ---- */
+    .metric-row { display: flex; gap: 0.75rem; margin: 1rem 0; flex-wrap: wrap; }
+    .metric-card {
+        flex: 1;
+        min-width: 120px;
+        background: white;
+        border-radius: 10px;
+        padding: 1rem 1.2rem;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+        border-left: 4px solid #ccc;
+        text-align: center;
+    }
+    .metric-card .metric-value { font-size: 1.8rem; font-weight: 700; line-height: 1.2; }
+    .metric-card .metric-label { font-size: 0.78rem; color: #666; margin-top: 0.2rem; text-transform: uppercase; letter-spacing: 0.03em; }
+    .metric-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.12); transition: all 0.2s; }
+    .metric-valid { border-left-color: #28a745; }
+    .metric-valid .metric-value { color: #28a745; }
+    .metric-invalid { border-left-color: #dc3545; }
+    .metric-invalid .metric-value { color: #dc3545; }
+    .metric-format { border-left-color: #6f42c1; }
+    .metric-format .metric-value { color: #6f42c1; }
+    .metric-service { border-left-color: #fd7e14; }
+    .metric-service .metric-value { color: #fd7e14; }
+    .metric-other { border-left-color: #6c757d; }
+    .metric-other .metric-value { color: #6c757d; }
+    .metric-verified { border-left-color: #28a745; }
+    .metric-verified .metric-value { color: #28a745; }
+    .metric-check { border-left-color: #fd7e14; }
+    .metric-check .metric-value { color: #fd7e14; }
+    .metric-fraud { border-left-color: #dc3545; background: #fff5f5; }
+    .metric-fraud .metric-value { color: #dc3545; }
+
+    /* ---- Status Badges ---- */
+    .badge {
+        display: inline-block;
+        padding: 3px 10px;
+        border-radius: 12px;
+        font-size: 0.78rem;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        background: #e9ecef;
+        color: #495057;
+    }
+    .badge-success { background: #d4edda; color: #155724; }
+    .badge-info { background: #d1ecf1; color: #0c5460; }
+
+    /* ---- Section Headers ---- */
+    .section-header {
+        font-size: 1.05rem;
+        font-weight: 600;
+        color: #1a1a2e;
+        padding-bottom: 0.4rem;
+        border-bottom: 2px solid #003399;
+        margin: 1.5rem 0 0.8rem 0;
+        display: inline-block;
+    }
+
+    /* ---- Info Box ---- */
+    .info-box {
+        background: #f8f9fa;
+        border: 1px solid #e9ecef;
+        border-radius: 8px;
+        padding: 1rem 1.2rem;
+        margin: 0.8rem 0;
+    }
+    .info-box-blue {
+        background: #e8f4fd;
+        border-color: #b8daff;
+    }
+
+    /* ---- Sidebar ---- */
+    section[data-testid="stSidebar"] {
+        background: #f8f9fa;
+    }
+    section[data-testid="stSidebar"] .block-container {
+        padding-top: 1rem;
+    }
+    .sidebar-section {
+        background: white;
+        border-radius: 8px;
+        padding: 1rem;
+        margin-bottom: 0.8rem;
+        border: 1px solid #e9ecef;
+    }
+    .sidebar-title {
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: #003399;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 0.5rem;
+    }
+
+    /* ---- Download Buttons ---- */
+    .download-section {
+        background: #f8f9fa;
+        border-radius: 10px;
+        padding: 1.2rem;
+        margin-top: 1rem;
+        border: 1px solid #e9ecef;
+    }
+
+    /* ---- Summary Box ---- */
+    .summary-box {
+        background: linear-gradient(135deg, #f0f7ff 0%, #e8f4fd 100%);
+        border: 1px solid #b8daff;
+        border-radius: 10px;
+        padding: 1.2rem 1.5rem;
+        margin: 1rem 0;
+    }
+    .summary-box h4 { margin: 0 0 0.5rem 0; color: #003399; font-size: 1rem; }
+
+    /* ---- Hide default Streamlit branding ---- */
+    #MainMenu { visibility: hidden; }
+    footer { visibility: hidden; }
+
+    /* ---- Table improvements ---- */
+    .stDataFrame { border-radius: 8px; overflow: hidden; }
+</style>
+""", unsafe_allow_html=True)
 
 # --- SESSION-BASED ISOLATION FOR MULTI-USER SAFETY ---
 # Generate unique session ID for each user to prevent race conditions
@@ -105,9 +273,10 @@ def has_checkpoint():
 
 API_URL_GET = "https://ec.europa.eu/taxation_customs/vies/rest-api/ms/{}/vat/{}"
 API_URL_POST = "https://ec.europa.eu/taxation_customs/vies/rest-api/check-vat-number"
-MAX_WORKERS = 5  # Number of concurrent threads
+MAX_WORKERS = 8  # Number of concurrent threads
 MAX_RETRIES = 3  # Number of retry attempts for failed requests
-RETRY_DELAY = 2  # Seconds to wait between retries
+RETRY_BASE_DELAY = 0.5  # Base delay for exponential backoff (0.5s, 1s, 2s)
+RATE_LIMIT_SLEEP = 0.5  # Seconds to wait before each API call
 
 # Thread-safe lock for any shared resources
 results_lock = threading.Lock()
@@ -427,9 +596,23 @@ def detect_data_format(df, vat_keywords, country_keywords):
         )
 
 
+# Shared session for connection pooling (reuses TCP/SSL connections)
+_vies_session = requests.Session()
+_vies_session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'application/json',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Content-Type': 'application/json',
+})
+# Connection pool sized to match worker count
+_adapter = requests.adapters.HTTPAdapter(pool_connections=MAX_WORKERS, pool_maxsize=MAX_WORKERS)
+_vies_session.mount('https://', _adapter)
+
+
 def _vies_request(url, headers, method="GET", payload=None, timeout=30):
     """
     Internal helper to make a single VIES API request.
+    Uses shared session for connection pooling.
 
     Returns:
         tuple: (success, data_or_error, debug_info)
@@ -443,9 +626,9 @@ def _vies_request(url, headers, method="GET", payload=None, timeout=30):
 
     try:
         if method == "POST":
-            response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+            response = _vies_session.post(url, json=payload, timeout=timeout)
         else:
-            response = requests.get(url, headers=headers, timeout=timeout)
+            response = _vies_session.get(url, timeout=timeout)
 
         if response.status_code != 200:
             return False, f"HTTP {response.status_code}", debug_info
@@ -541,12 +724,7 @@ def check_vat(country, number, max_retries=None, requester_country=None, request
     if requester_number:
         requester_number = re.sub(r'[^A-Z0-9]', '', str(requester_number).upper())
 
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Content-Type': 'application/json',
-    }
+    headers = {}  # Session already has default headers
 
     # Collect debug info for troubleshooting
     all_debug_info = []
@@ -562,7 +740,7 @@ def check_vat(country, number, max_retries=None, requester_country=None, request
         }
 
         for attempt in range(max_retries):
-            time.sleep(0.5)  # Rate limiting
+            time.sleep(RATE_LIMIT_SLEEP)  # Rate limiting
 
             success, data, debug_info = _vies_request(
                 API_URL_POST, headers, method="POST", payload=payload
@@ -570,14 +748,13 @@ def check_vat(country, number, max_retries=None, requester_country=None, request
             all_debug_info.append(f"POST attempt {attempt + 1}: {debug_info}")
 
             if not success:
-                # Network/HTTP error - retry
+                # Network/HTTP error - retry with exponential backoff
                 if attempt < max_retries - 1:
-                    time.sleep(RETRY_DELAY)
+                    time.sleep(RETRY_BASE_DELAY * (2 ** attempt))
                     continue
                 break
 
             # Check for actionSucceed=false (error response format)
-            # Example: {"actionSucceed": false, "errorWrappers": [{"error": "INVALID_REQUESTER_INFO"}]}
             if data.get("actionSucceed") is False:
                 error_wrappers = data.get("errorWrappers", [])
                 error_codes = [e.get("error", "") for e in error_wrappers]
@@ -588,9 +765,9 @@ def check_vat(country, number, max_retries=None, requester_country=None, request
                     all_debug_info.append("Requester VAT invalid - falling back to GET")
                     break
 
-                # For other errors, retry if possible
+                # For other errors, retry with exponential backoff
                 if attempt < max_retries - 1:
-                    time.sleep(RETRY_DELAY)
+                    time.sleep(RETRY_BASE_DELAY * (2 ** attempt))
                     continue
                 break
 
@@ -598,7 +775,7 @@ def check_vat(country, number, max_retries=None, requester_country=None, request
             user_error = data.get("userError", "")
             if user_error in SERVICE_UNAVAILABLE_ERRORS:
                 if attempt < max_retries - 1:
-                    time.sleep(RETRY_DELAY)
+                    time.sleep(RETRY_BASE_DELAY * (2 ** attempt))
                     continue
                 break
 
@@ -632,15 +809,15 @@ def check_vat(country, number, max_retries=None, requester_country=None, request
     get_url = API_URL_GET.format(country, number)
 
     for attempt in range(max_retries):
-        time.sleep(0.5)  # Rate limiting
+        time.sleep(RATE_LIMIT_SLEEP)  # Rate limiting
 
         success, data, debug_info = _vies_request(get_url, headers, method="GET")
         all_debug_info.append(f"GET attempt {attempt + 1}: {debug_info}")
 
         if not success:
-            # Network/HTTP error - retry
+            # Network/HTTP error - retry with exponential backoff
             if attempt < max_retries - 1:
-                time.sleep(RETRY_DELAY)
+                time.sleep(RETRY_BASE_DELAY * (2 ** attempt))
                 continue
             # Max retries exceeded
             return {
@@ -659,7 +836,7 @@ def check_vat(country, number, max_retries=None, requester_country=None, request
         user_error = data.get("userError", "")
         if user_error in SERVICE_UNAVAILABLE_ERRORS:
             if attempt < max_retries - 1:
-                time.sleep(RETRY_DELAY)
+                time.sleep(RETRY_BASE_DELAY * (2 ** attempt))
                 continue
             return {
                 "valid": None,
@@ -890,96 +1067,128 @@ def process_single_vat(index, raw_vat, customer_name=None, requester_country=Non
     }
 
 
+# --- HELPER: STEP INDICATOR ---
+def render_step_bar(active_step):
+    """Renders a step progress bar. Steps: 1=Upload, 2=Configure, 3=Validate, 4=Results"""
+    steps = [
+        ("1. Upload", "Upload your file"),
+        ("2. Configure", "Map columns"),
+        ("3. Validate", "Check VAT numbers"),
+        ("4. Results", "Download results"),
+    ]
+    html = '<div class="step-bar">'
+    for i, (label, _) in enumerate(steps, 1):
+        if i < active_step:
+            cls = "step-item step-done"
+            icon = "&#10003; "
+        elif i == active_step:
+            cls = "step-item step-active"
+            icon = ""
+        else:
+            cls = "step-item"
+            icon = ""
+        html += f'<div class="{cls}">{icon}{label}</div>'
+    html += '</div>'
+    st.markdown(html, unsafe_allow_html=True)
+
 # --- WEBSITE ---
 
-st.title("EU VAT Bulk Checker")
-st.markdown("Upload an Excel file with VAT numbers (include country code, e.g. DK12345678).")
+# Header
+st.markdown("""
+<div class="app-header">
+    <h1>EU VAT Bulk Checker</h1>
+    <p>Validate EU VAT numbers against the official VIES database &mdash; with fraud detection and legal documentation</p>
+</div>
+""", unsafe_allow_html=True)
 
 # Sidebar for settings
 with st.sidebar:
-    st.header("Legal Documentation")
-    st.markdown("Enter your own VAT number to receive a legally valid Consultation ID (proof of verification).")
+    st.markdown('<div class="sidebar-title">Settings</div>', unsafe_allow_html=True)
 
-    # List of EU country codes for the dropdown
-    EU_COUNTRY_CODES = [
-        "", "AT", "BE", "BG", "CY", "CZ", "DE", "DK", "EE", "EL", "ES",
-        "FI", "FR", "HR", "HU", "IE", "IT", "LT", "LU", "LV", "MT",
-        "NL", "PL", "PT", "RO", "SE", "SI", "SK", "XI"
-    ]
+    # --- Legal Documentation Section ---
+    with st.expander("Legal Documentation", expanded=True):
+        st.caption("Enter your VAT to receive a legally valid Consultation ID as proof of verification. Press Enter to confirm.")
 
-    requester_country = st.selectbox(
-        "Your Country",
-        options=EU_COUNTRY_CODES,
-        index=0,
-        help="Select your country code"
-    )
+        EU_COUNTRY_CODES = [
+            "", "AT", "BE", "BG", "CY", "CZ", "DE", "DK", "EE", "EL", "ES",
+            "FI", "FR", "HR", "HU", "IE", "IT", "LT", "LU", "LV", "MT",
+            "NL", "PL", "PT", "RO", "SE", "SI", "SK", "XI"
+        ]
 
-    # Initialize session state for confirmed VAT number
-    if 'confirmed_requester_vat' not in st.session_state:
-        st.session_state.confirmed_requester_vat = ""
+        col_cc, col_vn = st.columns([2, 3])
+        with col_cc:
+            requester_country = st.selectbox(
+                "Country",
+                options=EU_COUNTRY_CODES,
+                index=0,
+                help="Select your country code"
+            )
+        with col_vn:
+            if 'confirmed_requester_vat' not in st.session_state:
+                st.session_state.confirmed_requester_vat = ""
 
-    requester_number_input = st.text_input(
-        "Your VAT Number (without country code)",
-        value="",
-        placeholder="e.g. 12345678",
-        help="Enter only the number part. Required for legal proof. Press Enter to confirm.",
-        key="requester_vat_input"
-    )
+            requester_number_input = st.text_input(
+                "VAT Number",
+                value="",
+                placeholder="e.g. 12345678",
+                help="Number only, without country code",
+                key="requester_vat_input"
+            )
 
-    # Show green confirmation when Enter is pressed (value is submitted)
-    if requester_number_input and requester_number_input.strip():
-        st.session_state.confirmed_requester_vat = requester_number_input.strip()
-        st.markdown(
-            f'<div style="background-color: #d4edda; border: 1px solid #28a745; border-radius: 4px; padding: 8px; margin-top: -10px;">'
-            f'<span style="color: #155724;">✓ VAT Number confirmed: <strong>{requester_number_input.strip()}</strong></span></div>',
-            unsafe_allow_html=True
-        )
-    elif st.session_state.confirmed_requester_vat:
-        # Clear confirmation if input is emptied
-        st.session_state.confirmed_requester_vat = ""
+        if requester_number_input and requester_number_input.strip():
+            st.session_state.confirmed_requester_vat = requester_number_input.strip()
+            st.markdown(
+                f'<span class="badge badge-success">Confirmed: {requester_country}{requester_number_input.strip()}</span>',
+                unsafe_allow_html=True
+            )
+        elif st.session_state.confirmed_requester_vat:
+            st.session_state.confirmed_requester_vat = ""
 
-    st.markdown("---")
-    st.header("Fraud Detection")
-    st.markdown("Compare customer names from your file with official VIES records.")
-    enable_fraud_detection = st.checkbox("Enable Name Verification", value=False)
+    # --- Fraud Detection Section ---
+    with st.expander("Fraud Detection", expanded=False):
+        st.caption("Compare customer names from your file against official VIES records.")
+        enable_fraud_detection = st.checkbox("Enable Name Verification", value=False)
 
-    st.markdown("---")
-    st.markdown("**Risk Levels:**")
-    st.markdown("- **Verified**: Score > 60%")
-    st.markdown("- **Check Manually**: Score 20-60%")
-    st.markdown("- **POTENTIAL FRAUD**: Score < 20%")
+        if enable_fraud_detection:
+            st.markdown("""
+| Score | Risk Level |
+|-------|-----------|
+| > 60% | Verified |
+| 20-60% | Check Manually |
+| < 20% | POTENTIAL FRAUD |
+""")
+
+    # --- About Section ---
+    with st.expander("About", expanded=False):
+        st.caption("Validates EU VAT numbers via the official VIES API from the European Commission. Supports all 27 EU member states + Northern Ireland.")
+        st.caption(f"Concurrent workers: {MAX_WORKERS} | Retries: {MAX_RETRIES}")
+
+# --- Determine current step for step bar ---
+has_results = 'validation_results' in st.session_state and st.session_state['validation_results']
+current_step = 4 if has_results else 1
+# (will be updated as we go)
 
 uploaded_file = st.file_uploader(
-    "Choose your file",
-    type=["xlsx", "xls", "xlsm", "xlsb", "ods", "csv"]
+    "Upload your Excel or CSV file with VAT numbers",
+    type=["xlsx", "xls", "xlsm", "xlsb", "ods", "csv"],
+    help="Supported: .xlsx, .xls, .xlsm, .xlsb, .ods, .csv"
 )
 
-if uploaded_file:
-    # Determine file type and read accordingly
-    file_name = uploaded_file.name.lower()
+if not uploaded_file and not has_results:
+    render_step_bar(1)
+    st.markdown("""
+<div class="info-box info-box-blue">
+    <strong>How to use:</strong><br>
+    1. Upload a file containing VAT numbers (with country codes like DK, DE, FR)<br>
+    2. Configure which columns contain the data<br>
+    3. Click <em>Start Validation</em> to check all numbers against VIES<br>
+    4. Download the results as CSV or Excel
+</div>
+""", unsafe_allow_html=True)
+    st.stop()
 
-    try:
-        if file_name.endswith('.csv'):
-            # CSV files
-            df = pd.read_csv(uploaded_file)
-        elif file_name.endswith('.xlsb'):
-            # Excel Binary Workbook (requires pyxlsb)
-            df = pd.read_excel(uploaded_file, engine='pyxlsb')
-        elif file_name.endswith('.ods'):
-            # OpenDocument Spreadsheet (requires odfpy)
-            df = pd.read_excel(uploaded_file, engine='odf')
-        else:
-            # Standard Excel formats (xlsx, xls, xlsm)
-            df = pd.read_excel(uploaded_file)
-    except ImportError as e:
-        if 'pyxlsb' in str(e):
-            st.error("To read .xlsb files, please install pyxlsb: `pip install pyxlsb`")
-            st.stop()
-        elif 'odfpy' in str(e):
-            st.error("To read .ods files, please install odfpy: `pip install odfpy`")
-            st.stop()
-        else:
-            raise e
+if uploaded_file:
+    file_name = uploaded_file.name.lower()
 
     # Clear previous results when a new file is uploaded
     if 'current_file' not in st.session_state or st.session_state['current_file'] != file_name:
@@ -988,18 +1197,96 @@ if uploaded_file:
             del st.session_state['validation_results']
         if 'duplicate_data' in st.session_state:
             del st.session_state['duplicate_data']
+        if 'selected_sheet' in st.session_state:
+            del st.session_state['selected_sheet']
 
-    st.write("Preview:")
-    st.dataframe(df.head())
+    # --- Detect sheets and read data ---
+    sheet_names = None
+    selected_sheet = 0  # default: first sheet
+    xls = None
+
+    try:
+        if file_name.endswith('.csv'):
+            sheet_names = None
+        elif file_name.endswith('.xlsb'):
+            xls = pd.ExcelFile(uploaded_file, engine='pyxlsb')
+            sheet_names = xls.sheet_names
+        elif file_name.endswith('.ods'):
+            xls = pd.ExcelFile(uploaded_file, engine='odf')
+            sheet_names = xls.sheet_names
+        else:
+            xls = pd.ExcelFile(uploaded_file)
+            sheet_names = xls.sheet_names
+    except ImportError as e:
+        if 'pyxlsb' in str(e):
+            st.error("To read .xlsb files, please install pyxlsb: `pip install pyxlsb`")
+        elif 'odfpy' in str(e):
+            st.error("To read .ods files, please install odfpy: `pip install odfpy`")
+        else:
+            st.error(f"Missing library: {e}")
+        st.stop()
+    except Exception as e:
+        st.error(f"Could not read file. It may be corrupted or password-protected. ({type(e).__name__}: {str(e)[:100]})")
+        st.stop()
+
+    # Show sheet selector if multiple sheets exist
+    if sheet_names and len(sheet_names) > 1:
+        selected_sheet = st.selectbox(
+            "Select sheet",
+            options=list(range(len(sheet_names))),
+            format_func=lambda i: sheet_names[i],
+            index=0,
+            help=f"This file has {len(sheet_names)} sheets"
+        )
+
+    # Read the data from the selected sheet (reuse ExcelFile to avoid double-read)
+    try:
+        if file_name.endswith('.csv'):
+            try:
+                df = pd.read_csv(uploaded_file)
+            except UnicodeDecodeError:
+                uploaded_file.seek(0)
+                df = pd.read_csv(uploaded_file, encoding='latin-1')
+        elif xls is not None:
+            df = xls.parse(sheet_name=selected_sheet)
+        else:
+            df = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
+    except UnicodeDecodeError:
+        st.error("Could not read file: encoding not supported. Try saving the file as UTF-8 CSV.")
+        st.stop()
+    except Exception as e:
+        st.error(f"Error reading data: {type(e).__name__}: {str(e)[:100]}")
+        st.stop()
+
+    # Guard against empty files
+    if df.empty:
+        st.warning("This file (or sheet) contains no data rows. Please upload a file with data.")
+        st.stop()
+
+    has_results = 'validation_results' in st.session_state and st.session_state['validation_results']
+    if not has_results:
+        render_step_bar(2)
+
+    # File summary
+    sheet_info = ""
+    if sheet_names and len(sheet_names) > 1:
+        sheet_info = f' &mdash; Sheet: <strong>{sheet_names[selected_sheet]}</strong>'
+    st.markdown(f"""
+<div class="info-box">
+    <strong>{uploaded_file.name}</strong> &mdash; {len(df):,} rows, {len(df.columns)} columns{sheet_info}
+</div>
+""", unsafe_allow_html=True)
+
+    with st.expander("Data Preview", expanded=False):
+        st.dataframe(df.head(10), use_container_width=True)
 
     # --- COLUMN FORMAT SELECTION ---
-    st.markdown("### Data Format Configuration")
+    if not has_results:
+        st.markdown('<div class="section-header">Column Mapping</div>', unsafe_allow_html=True)
 
-    # Keywords for column detection
     vat_keywords = ["vat no.", "vat no", "vat", "momsnummer", "moms", "tax code", "taxcode", "cvr", "nummer"]
     country_keywords = ["country code", "country", "landekode", "land"]
 
-    # Auto-detect data format based on actual values
     detected_format, detected_vat_col, detected_country_col = detect_data_format(
         df, vat_keywords, country_keywords
     )
@@ -1008,14 +1295,16 @@ if uploaded_file:
     default_index = format_options.index(detected_format) if detected_format in format_options else 0
 
     data_format = st.radio(
-        "How is the VAT data formatted?",
+        "VAT data format",
         options=format_options,
         index=default_index,
         horizontal=True,
-        help="Auto-detected based on your data. Change if needed."
+        help="Auto-detected from your data. Change if incorrect."
     )
 
-    # Find default VAT column (use detected or fallback to keyword search)
+    # Show auto-detect badge
+    st.markdown(f'<span class="badge badge-info">Auto-detected: {detected_format.split("(")[0].strip()}</span>', unsafe_allow_html=True)
+
     default_vat_col = detected_vat_col
     if default_vat_col is None:
         for col in df.columns:
@@ -1025,7 +1314,6 @@ if uploaded_file:
     if default_vat_col is None:
         default_vat_col = df.columns[0]
 
-    # Find default country column (use detected or fallback to keyword search)
     default_country_col = detected_country_col
     if default_country_col is None:
         for col in df.columns:
@@ -1033,37 +1321,34 @@ if uploaded_file:
                 default_country_col = col
                 break
 
-    # Conditional column selectors
     if data_format == "Combined (e.g., DK12345678)":
         vat_column = st.selectbox(
-            "Select VAT Column (with country code):",
+            "VAT Column (with country code)",
             options=df.columns.tolist(),
             index=df.columns.tolist().index(default_vat_col) if default_vat_col in df.columns.tolist() else 0
         )
         country_column = None
         number_column = None
-        st.info(f"Using combined VAT column: **{vat_column}**")
     else:
         col1, col2 = st.columns(2)
         with col1:
             country_column = st.selectbox(
-                "Select Country Code Column:",
+                "Country Code Column",
                 options=df.columns.tolist(),
                 index=df.columns.tolist().index(default_country_col) if default_country_col and default_country_col in df.columns.tolist() else 0
             )
         with col2:
             number_column = st.selectbox(
-                "Select VAT Number Column:",
+                "VAT Number Column",
                 options=df.columns.tolist(),
                 index=df.columns.tolist().index(default_vat_col) if default_vat_col in df.columns.tolist() else 0
             )
         vat_column = None
-        st.info(f"Will combine: **{country_column}** + **{number_column}**")
 
     # Column selector for customer name (for fraud detection)
     name_column = None
     if enable_fraud_detection:
-        st.markdown("### Fraud Detection Setup")
+        st.markdown('<div class="section-header">Fraud Detection</div>', unsafe_allow_html=True)
         name_keywords = ["name", "company", "firma", "kunde", "customer", "navn"]
         default_name_col = None
         for col in df.columns:
@@ -1072,35 +1357,37 @@ if uploaded_file:
                 break
 
         name_column = st.selectbox(
-            "Select column with Customer/Company Names:",
+            "Customer/Company Name Column",
             options=df.columns.tolist(),
             index=df.columns.tolist().index(default_name_col) if default_name_col else 0
         )
-        st.success(f"Will compare names from **{name_column}** with VIES records.")
 
     # --- CHECKPOINT/RESUME DETECTION ---
-    # Check if there's a saved checkpoint for this session
     checkpoint_exists = has_checkpoint()
     resume_mode = False
 
     if checkpoint_exists:
-        st.warning("A previous validation was interrupted. Would you like to resume?")
-        col_resume, col_restart = st.columns(2)
+        st.markdown("""
+<div class="info-box" style="border-left: 4px solid #fd7e14;">
+    <strong>Previous validation interrupted</strong> &mdash; You can resume where you left off or start fresh.
+</div>
+""", unsafe_allow_html=True)
+        col_resume, col_restart, _ = st.columns([1, 1, 2])
         with col_resume:
-            if st.button("Resume Previous Validation", type="primary"):
+            if st.button("Resume", type="primary", use_container_width=True):
                 resume_mode = True
                 st.session_state['resume_requested'] = True
         with col_restart:
-            if st.button("Start Fresh (Delete Checkpoint)"):
+            if st.button("Start Fresh", use_container_width=True):
                 cleanup_checkpoint()
                 st.session_state['resume_requested'] = False
                 st.rerun()
 
-    # Handle resume request from previous interaction
     if st.session_state.get('resume_requested', False):
         resume_mode = True
 
-    if st.button("Start Validation") or resume_mode:
+    st.markdown("")  # spacer
+    if st.button("Start Validation", type="primary", use_container_width=True) or resume_mode:
 
         # Clean and validate requester VAT for legal documentation (Consultation ID)
         # requester_country comes directly from the selectbox
@@ -1132,9 +1419,14 @@ if uploaded_file:
         # Reset circuit breaker counters for new validation run
         country_error_count.clear()
 
-        # Turbo Mode notification (using empty placeholder so it can be cleared)
+        render_step_bar(3)
+
         turbo_mode_placeholder = st.empty()
-        turbo_mode_placeholder.success(f"Turbo Mode Active: Checking {MAX_WORKERS} numbers at once.")
+        turbo_mode_placeholder.markdown(f"""
+<div class="info-box info-box-blue">
+    Validating with <strong>{MAX_WORKERS} concurrent workers</strong> for faster processing.
+</div>
+""", unsafe_allow_html=True)
 
         progress_bar_placeholder = st.empty()
         progress_bar = progress_bar_placeholder.progress(0)
@@ -1202,6 +1494,10 @@ if uploaded_file:
             st.warning(f"Removed {duplicates_removed} duplicate VAT numbers. Processing {unique_count} unique numbers.")
 
         total = unique_count
+
+        if total == 0:
+            st.warning("No valid VAT numbers found to process. Check that your column mapping is correct.")
+            st.stop()
 
         # Prepare list of tasks: (index, vat_number, customer_name)
         all_tasks = [(i, vat, name) for i, (vat, name) in enumerate(unique_data)]
@@ -1332,6 +1628,8 @@ if uploaded_file:
         total = st.session_state.get('total_count', len(results))
         fraud_detection_enabled = st.session_state.get('fraud_detection_enabled', False)
 
+        render_step_bar(4)
+
         # Calculate summary statistics
         valid_count = sum(1 for r in results if r["VIES Validation Status"] == "Valid")
         invalid_count = sum(1 for r in results if r["VIES Validation Status"] == "Invalid")
@@ -1339,29 +1637,65 @@ if uploaded_file:
         service_error_count = sum(1 for r in results if r["VIES Validation Status"] == "Service Unavailable")
         other_error_count = total - valid_count - invalid_count - invalid_format_count - service_error_count
 
-        st.success(f"Complete! Processed {total} VAT numbers in {total_time_str}.")
+        # Completion summary
+        st.markdown(f"""
+<div class="summary-box">
+    <h4>Validation Complete</h4>
+    Processed <strong>{total:,}</strong> VAT numbers in <strong>{total_time_str}</strong>
+</div>
+""", unsafe_allow_html=True)
 
-        # Summary metrics
-        col1, col2, col3, col4, col5 = st.columns(5)
-        col1.metric("Valid", valid_count, delta=None)
-        col2.metric("Invalid", invalid_count, delta=None)
-        col3.metric("Invalid Format", invalid_format_count, delta=None)
-        col4.metric("Service Unavailable", service_error_count, delta=None)
-        col5.metric("Other Errors", other_error_count, delta=None)
+        # Custom metric cards (color-coded)
+        st.markdown(f"""
+<div class="metric-row">
+    <div class="metric-card metric-valid">
+        <div class="metric-value">{valid_count}</div>
+        <div class="metric-label">Valid</div>
+    </div>
+    <div class="metric-card metric-invalid">
+        <div class="metric-value">{invalid_count}</div>
+        <div class="metric-label">Invalid</div>
+    </div>
+    <div class="metric-card metric-format">
+        <div class="metric-value">{invalid_format_count}</div>
+        <div class="metric-label">Invalid Format</div>
+    </div>
+    <div class="metric-card metric-service">
+        <div class="metric-value">{service_error_count}</div>
+        <div class="metric-label">Service Error</div>
+    </div>
+    <div class="metric-card metric-other">
+        <div class="metric-value">{other_error_count}</div>
+        <div class="metric-label">Other</div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
         # Fraud detection summary (if enabled)
         if fraud_detection_enabled:
-            st.markdown("### Fraud Detection Summary")
             fraud_results = [r for r in results if r["Identity Risk"] != "---"]
             if fraud_results:
                 verified_count = sum(1 for r in fraud_results if r["Identity Risk"] == "Verified")
                 check_count = sum(1 for r in fraud_results if r["Identity Risk"] == "Check Manually")
                 fraud_count = sum(1 for r in fraud_results if r["Identity Risk"] == "POTENTIAL FRAUD")
 
-                fcol1, fcol2, fcol3 = st.columns(3)
-                fcol1.metric("Verified", verified_count)
-                fcol2.metric("Check Manually", check_count)
-                fcol3.metric("POTENTIAL FRAUD", fraud_count)
+                st.markdown('<div class="section-header">Fraud Detection</div>', unsafe_allow_html=True)
+                st.markdown(f"""
+<div class="metric-row">
+    <div class="metric-card metric-verified">
+        <div class="metric-value">{verified_count}</div>
+        <div class="metric-label">Verified</div>
+    </div>
+    <div class="metric-card metric-check">
+        <div class="metric-value">{check_count}</div>
+        <div class="metric-label">Check Manually</div>
+    </div>
+    <div class="metric-card metric-fraud">
+        <div class="metric-value">{fraud_count}</div>
+        <div class="metric-label">Potential Fraud</div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
         result_df = pd.DataFrame(results)
 
@@ -1369,7 +1703,7 @@ if uploaded_file:
         if "Consultation ID" in result_df.columns:
             result_df["Consultation ID"] = result_df["Consultation ID"].astype(str)
 
-        # Define explicit column order (Consultation ID right after Correct Format)
+        # Define explicit column order
         base_columns = [
             "No.",
             "Name from Output (VIES)",
@@ -1382,69 +1716,86 @@ if uploaded_file:
             "Correct Format",
             "Consultation ID"
         ]
-        fraud_columns = ["Customer Name (Input)", "Name Match Score", "Identity Risk"]
+        fraud_columns_list = ["Customer Name (Input)", "Name Match Score", "Identity Risk"]
 
-        # Build final column order based on what's available
         final_columns = [col for col in base_columns if col in result_df.columns]
         if fraud_detection_enabled:
-            final_columns.extend([col for col in fraud_columns if col in result_df.columns])
+            final_columns.extend([col for col in fraud_columns_list if col in result_df.columns])
         result_df = result_df[final_columns]
 
-        # Remove fraud detection columns if not enabled
         if not fraud_detection_enabled:
             result_df = result_df.drop(columns=["Customer Name (Input)", "Name Match Score", "Identity Risk"], errors='ignore')
 
         # Style the validation status and identity risk columns
         def highlight_status(val):
             if val == "Valid":
-                return "color: green; font-weight: bold"
+                return "color: #155724; font-weight: bold; background-color: #d4edda"
             elif val == "Invalid":
-                return "color: red; font-weight: bold"
+                return "color: #721c24; font-weight: bold; background-color: #f8d7da"
             elif val == "Invalid Format":
-                return "color: purple; font-weight: bold"
+                return "color: #4a1a7a; font-weight: bold; background-color: #e8d5f5"
             elif val == "Service Unavailable":
-                return "color: orange; font-weight: bold"
+                return "color: #856404; font-weight: bold; background-color: #fff3cd"
             elif val in ["Unknown", "Error"]:
-                return "color: gray; font-weight: bold"
+                return "color: #6c757d; font-weight: bold; background-color: #f0f0f0"
             return ""
 
         def highlight_risk(val):
             if val == "Verified":
-                return "color: green; font-weight: bold"
+                return "color: #155724; font-weight: bold; background-color: #d4edda"
             elif val == "Check Manually":
-                return "color: orange; font-weight: bold"
+                return "color: #856404; font-weight: bold; background-color: #fff3cd"
             elif val == "POTENTIAL FRAUD":
-                return "color: red; font-weight: bold; background-color: #ffcccc"
+                return "color: #721c24; font-weight: bold; background-color: #f8d7da"
             return ""
 
+        st.markdown('<div class="section-header">Detailed Results</div>', unsafe_allow_html=True)
+
         if fraud_detection_enabled and "Identity Risk" in result_df.columns:
-            styled_df = result_df.style.applymap(highlight_status, subset=["VIES Validation Status"]).applymap(highlight_risk, subset=["Identity Risk"])
+            styled_df = result_df.style.map(highlight_status, subset=["VIES Validation Status"]).map(highlight_risk, subset=["Identity Risk"])
         else:
-            styled_df = result_df.style.applymap(highlight_status, subset=["VIES Validation Status"])
+            styled_df = result_df.style.map(highlight_status, subset=["VIES Validation Status"])
 
-        st.dataframe(styled_df, use_container_width=True)
+        st.dataframe(styled_df, use_container_width=True, height=500)
 
-        # Download buttons
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            csv = result_df.to_csv(index=False).encode('utf-8')
-            st.download_button("Download CSV", csv, "vat_results.csv", "text/csv", key="download_csv")
-        with col2:
-            # Use session-specific temp file to avoid race conditions
-            temp_excel_file = os.path.join(CACHE_DIR, f"temp_{st.session_state['session_id']}.xlsx")
-            ensure_cache_dir()
-            excel_buffer = pd.ExcelWriter(temp_excel_file, engine='openpyxl')
-            result_df.to_excel(excel_buffer, index=False)
-            excel_buffer.close()
-            with open(temp_excel_file, "rb") as f:
-                excel_data = f.read()
-            # Clean up temp excel file after reading
-            try:
-                os.remove(temp_excel_file)
-            except Exception:
-                pass
-            st.download_button("Download Excel", excel_data, "vat_results.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_excel")
-        with col3:
+        # Download section
+        st.markdown('<div class="section-header">Export Results</div>', unsafe_allow_html=True)
+
+        # Prepare file data upfront
+        csv = result_df.to_csv(index=False).encode('utf-8')
+        temp_excel_file = os.path.join(CACHE_DIR, f"temp_{st.session_state['session_id']}.xlsx")
+        ensure_cache_dir()
+        excel_buffer = pd.ExcelWriter(temp_excel_file, engine='openpyxl')
+        result_df.to_excel(excel_buffer, index=False)
+        excel_buffer.close()
+        with open(temp_excel_file, "rb") as f:
+            excel_data = f.read()
+        try:
+            os.remove(temp_excel_file)
+        except Exception:
+            pass
+
+        with st.container(border=True):
+            dl_col1, dl_col2 = st.columns(2)
+            with dl_col1:
+                st.download_button(
+                    "Download CSV",
+                    csv,
+                    "vat_results.csv",
+                    "text/csv",
+                    key="download_csv",
+                    use_container_width=True
+                )
+            with dl_col2:
+                st.download_button(
+                    "Download Excel",
+                    excel_data,
+                    "vat_results.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="download_excel",
+                    use_container_width=True
+                )
+
             if duplicate_data:
                 duplicates_df = pd.DataFrame(duplicate_data)
                 duplicates_csv = duplicates_df.to_csv(index=False).encode('utf-8')
@@ -1453,13 +1804,12 @@ if uploaded_file:
                     duplicates_csv,
                     "vat_duplicates.csv",
                     "text/csv",
-                    key="download_duplicates"
+                    key="download_duplicates",
+                    use_container_width=True
                 )
-            else:
-                st.info("No duplicates found")
-        with col4:
-            if st.button("Start Over", key="start_over"):
-                # Clean up any session files and reset state
+
+            st.divider()
+            if st.button("Start Over", key="start_over", use_container_width=True):
                 cleanup_checkpoint()
                 for key in ['validation_results', 'duplicate_data', 'total_time_str',
                            'total_count', 'fraud_detection_enabled', 'resume_requested', 'current_file']:
